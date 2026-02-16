@@ -71,15 +71,19 @@ namespace AutoDecoder.Gui
             var summaryCol = dgvLines.Columns["Summary"];
             if (summaryCol != null)
             {
-                // Set fixed width for summary
-                summaryCol.Width = 250;
+                // Rename column header to "Report Summary"
+                summaryCol.HeaderText = "Report Summary";
+                // Set fixed width for report summary
+                summaryCol.Width = 400;
             }
 
             var detailsCol = dgvLines.Columns["Details"];
             if (detailsCol != null)
             {
-                // Set wider default width for details
-                detailsCol.Width = 400;
+                // Rename column header to "Technical Breakdown"
+                detailsCol.HeaderText = "Technical Breakdown";
+                // Set wider default width for technical breakdown
+                detailsCol.Width = 500;
             }
 
             var rawCol = dgvLines.Columns["Raw"];
@@ -501,7 +505,7 @@ namespace AutoDecoder.Gui
             // Iterate through all master log lines
             foreach (LogLine logLine in _allLogLines)
             {
-                // Build combined search field (Raw + Summary + Details)
+                // Build combined search field (Raw + Report Summary + Technical Breakdown)
                 string combinedField = (logLine.Raw ?? string.Empty) + " " +
                                       (logLine.Summary ?? string.Empty) + " " +
                                       (logLine.Details ?? string.Empty);

@@ -1,3 +1,5 @@
+using AutoDecoder.Models;
+
 namespace AutoDecoder.Decoders;
 
 // Static class for decoding UDS (Unified Diagnostic Services) payloads
@@ -253,5 +255,122 @@ public static class UdsDecoder
 
         // Build truncated format: "head ... (truncated) ... tail"
         return $"{headHex}\n... ({data.Length - headBytes - tailBytes} bytes truncated) ...\n{tailHex}";
+    }
+
+    // ============================================================
+    // NEW: Report Summary and Technical Breakdown Helpers
+    // ============================================================
+
+    // Build a clean, single-line Report Summary suitable for documentation
+    public static string BuildReportSummary(ParsedUdsFrame frame)
+    {
+        // Check for UDS Request
+        if (frame.IsRequest && frame.Did.HasValue)
+        {
+            // Format: UDS ReadDataByIdentifier (0x22) → DID 0x806A
+            return $"UDS ReadDataByIdentifier (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4}";
+        }
+
+        // Check for UDS Negative Response
+        if (frame.IsNegativeResponse && frame.Nrc.HasValue)
+        {
+            // Get original service name
+            string origService = frame.ServiceName;
+            // Format: UDS ReadDataByIdentifier (0x22) → DID 0xF188 — NRC 0x78 (Response Pending)
+            if (frame.Did.HasValue)
+            {
+                return $"UDS {origService} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
+            }
+            else
+            {
+                return $"UDS {origService} (0x{frame.ServiceId:X2}) — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
+            }
+        }
+
+        // Check for UDS Positive Response
+        if (frame.IsPositiveResponse && frame.Did.HasValue)
+        {
+            // Get data length
+            int dataLength = frame.DataBytes?.Length ?? 0;
+            // Format: UDS ReadDataByIdentifier (0x22) → DID 0x806A — Positive Response (384 bytes)
+            return $"UDS ReadDataByIdentifier (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — Positive Response ({dataLength} bytes)";
+        }
+
+        // Default fallback
+        return $"UDS Service 0x{frame.ServiceId:X2}";
+    }
+
+    // Build a structured, multi-line Technical Breakdown with all technical details
+    public static string BuildTechnicalBreakdown(ParsedUdsFrame frame)
+    {
+        // Use StringBuilder for efficient multi-line construction
+        var breakdown = new System.Text.StringBuilder();
+
+        // Add Direction
+        breakdown.AppendLine($"Direction: {frame.Direction}");
+
+        // Add CAN ID (from ID bytes)
+        if (frame.IdBytes != null && frame.IdBytes.Length > 0)
+        {
+            string canId = BitConverter.ToString(frame.IdBytes).Replace("-", " ");
+            breakdown.AppendLine($"CAN ID: [{canId}]");
+        }
+
+        // Add Service information
+        if (frame.IsRequest)
+        {
+            breakdown.AppendLine($"Service: ReadDataByIdentifier (0x{frame.ServiceId:X2})");
+        }
+        else if (frame.IsNegativeResponse)
+        {
+            breakdown.AppendLine($"Service: Negative Response (0x7F) to {frame.ServiceName} (0x{frame.ServiceId:X2})");
+        }
+        else if (frame.IsPositiveResponse)
+        {
+            breakdown.AppendLine($"Service: Positive Response (0x{frame.ServiceId:X2})");
+        }
+
+        // Add DID if present
+        if (frame.Did.HasValue)
+        {
+            breakdown.AppendLine($"DID: 0x{frame.Did.Value:X4} ({frame.DidName})");
+        }
+
+        // Add Data Length if data bytes present
+        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
+        {
+            breakdown.AppendLine($"Data Length: {frame.DataBytes.Length} bytes");
+        }
+
+        // Add NRC if present
+        if (frame.Nrc.HasValue)
+        {
+            breakdown.AppendLine($"NRC: 0x{frame.Nrc.Value:X2} ({frame.NrcName})");
+        }
+
+        // Add Raw Bytes (UDS Payload)
+        if (frame.UdsPayload != null && frame.UdsPayload.Length > 0)
+        {
+            string payloadHex = BitConverter.ToString(frame.UdsPayload).Replace("-", " ");
+            breakdown.AppendLine($"Raw Bytes: [{payloadHex}]");
+        }
+
+        // Add ASCII Preview if data bytes present (for positive responses)
+        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
+        {
+            // Use first 64 bytes for ASCII preview
+            byte[] previewBytes = frame.DataBytes.Length > 64 ? frame.DataBytes[0..64] : frame.DataBytes;
+            string asciiPreview = HexTools.ToAsciiPreview(previewBytes);
+            breakdown.AppendLine($"ASCII Preview: {asciiPreview}");
+
+            // Show truncation note if data is large
+            if (frame.DataBytes.Length > 64)
+            {
+                breakdown.AppendLine($"(showing first 64 of {frame.DataBytes.Length} bytes)");
+            }
+        }
+
+        // Return the complete breakdown (trim final newline)
+        return breakdown.ToString().TrimEnd();
     }
 }

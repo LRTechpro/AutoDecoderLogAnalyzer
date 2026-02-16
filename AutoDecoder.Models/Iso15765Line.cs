@@ -130,131 +130,177 @@ public sealed class Iso15765Line : LogLine
         // Extract UDS payload bytes (everything after first 4 bytes)
         byte[] udsPayload = _allBytes.Skip(4).ToArray();
 
-        // Convert ID bytes to hex string for display
-        string idHex = BitConverter.ToString(idBytes).Replace("-", " ");
-        // Convert UDS payload to hex string for display
-        string udsPayloadHex = BitConverter.ToString(udsPayload).Replace("-", " ");
+        // Parse UDS payload into structured frame
+        var frame = ParseUdsPayload(udsPayload, idBytes);
+
+        // Use new formatting helpers to build Summary and Details
+        Summary = BuildReportSummary(frame);
+        Details = BuildTechnicalBreakdown(frame);
+        Confidence = frame.IsRequest ? 0.9 : (frame.IsNegativeResponse ? 1.0 : 0.9);
+    }
+
+    // Parse UDS payload into structured ParsedUdsFrame
+    private ParsedUdsFrame ParseUdsPayload(byte[] udsPayload, byte[] idBytes)
+    {
+        var frame = new ParsedUdsFrame
+        {
+            Direction = _direction,
+            IdBytes = idBytes,
+            UdsPayload = udsPayload
+        };
 
         // Check for UDS Request: ReadDataByIdentifier (0x22)
         if (udsPayload.Length >= 3 && udsPayload[0] == 0x22)
         {
-            // Extract DID high byte
+            frame.IsRequest = true;
+            frame.ServiceId = 0x22;
+            frame.ServiceName = "ReadDataByIdentifier";
+
+            // Extract DID
             byte didHi = udsPayload[1];
-            // Extract DID low byte
             byte didLo = udsPayload[2];
-            // Combine to form 16-bit DID
-            ushort did = (ushort)((didHi << 8) | didLo);
-
-            // Format DID as hex
-            string didHex = $"0x{did:X4}";
-            // Get DID name if known
-            string didName = GetDidName(did);
-
-            // Build summary for ReadDID request
-            Summary = $"ISO15765 {_direction} - UDS Request: ReadDID {didHex} ({didName})";
-            // Build detailed information
-            Details = $"Direction: {_direction}\n";
-            // Add ID bytes
-            Details += $"ID Bytes: [{idHex}]\n";
-            // Add UDS payload
-            Details += $"UDS Payload: [{udsPayloadHex}]\n";
-            // Add decoded info
-            Details += $"UDS Request: ReadDataByIdentifier (0x22)\n";
-            // Add DID
-            Details += $"DID: {didHex} ({didName})";
-            // High confidence for request
-            Confidence = 0.9;
+            frame.Did = (ushort)((didHi << 8) | didLo);
+            frame.DidName = GetDidName(frame.Did.Value);
         }
-        // Check for UDS Negative Response (starts with 0x7F)
+        // Check for UDS Negative Response (0x7F)
         else if (udsPayload.Length >= 3 && udsPayload[0] == 0x7F)
         {
-            // Extract the original service ID that was requested
-            byte originalSid = udsPayload[1];
-            // Extract the negative response code (NRC)
-            byte nrc = udsPayload[2];
+            frame.IsNegativeResponse = true;
+            frame.ServiceId = udsPayload[1]; // Original service ID
+            frame.ServiceName = GetUdsServiceName(frame.ServiceId);
+            frame.Nrc = udsPayload[2];
+            frame.NrcName = GetUdsNrcMeaning(frame.Nrc.Value);
 
-            // Get service name (deterministic, no guessing)
-            string serviceName = GetUdsServiceName(originalSid);
-            // Get NRC meaning (deterministic, no guessing)
-            string nrcMeaning = GetUdsNrcMeaning(nrc);
-
-            // Build summary for negative response
-            Summary = $"ISO15765 {_direction} - UDS Negative Response: {serviceName} (0x{originalSid:X2}) NRC {nrcMeaning} (0x{nrc:X2})";
-            // Build detailed information
-            Details = $"Direction: {_direction}\n";
-            // Add ID bytes
-            Details += $"ID Bytes: [{idHex}]\n";
-            // Add UDS payload
-            Details += $"UDS Payload: [{udsPayloadHex}]\n";
-            // Add decoded info
-            Details += $"UDS Negative Response (0x7F):\n";
-            // Add original service
-            Details += $"  Original Service: 0x{originalSid:X2} ({serviceName})\n";
-            // Add NRC code
-            Details += $"  NRC: 0x{nrc:X2} ({nrcMeaning})";
-            // High confidence for negative response
-            Confidence = 1.0;
+            // Try to extract DID if this was a ReadDID request
+            if (frame.ServiceId == 0x22 && udsPayload.Length >= 5)
+            {
+                byte didHi = udsPayload[3];
+                byte didLo = udsPayload[4];
+                frame.Did = (ushort)((didHi << 8) | didLo);
+                frame.DidName = GetDidName(frame.Did.Value);
+            }
         }
         // Check for UDS Positive Response to ReadDataByIdentifier (0x62)
         else if (udsPayload.Length >= 3 && udsPayload[0] == 0x62)
         {
-            // Extract DID high byte
+            frame.IsPositiveResponse = true;
+            frame.ServiceId = 0x62;
+            frame.ServiceName = "ReadDataByIdentifier";
+
+            // Extract DID
             byte didHi = udsPayload[1];
-            // Extract DID low byte
             byte didLo = udsPayload[2];
-            // Combine to form 16-bit DID
-            ushort did = (ushort)((didHi << 8) | didLo);
+            frame.Did = (ushort)((didHi << 8) | didLo);
+            frame.DidName = GetDidName(frame.Did.Value);
 
-            // Format DID as hex
-            string didHex = $"0x{did:X4}";
-            // Get DID name if known
-            string didName = GetDidName(did);
-
-            // Extract data bytes after the DID
-            byte[] dataBytes = udsPayload.Length > 3 ? udsPayload[3..] : Array.Empty<byte>();
-            // Convert data bytes to hex string
-            string dataHex = dataBytes.Length > 0 ? BitConverter.ToString(dataBytes).Replace("-", " ") : "(none)";
-            // Create ASCII preview of data bytes
-            string asciiPreview = CreateAsciiPreview(dataBytes);
-
-            // Build summary for positive response
-            Summary = $"ISO15765 {_direction} - UDS Positive Response (ReadDID): DID {didHex} ({didName})";
-            // Build detailed information
-            Details = $"Direction: {_direction}\n";
-            // Add ID bytes
-            Details += $"ID Bytes: [{idHex}]\n";
-            // Add UDS payload
-            Details += $"UDS Payload: [{udsPayloadHex}]\n";
-            // Add decoded info
-            Details += $"UDS Positive Response to ReadDataByIdentifier (0x62):\n";
-            // Add DID
-            Details += $"  DID: {didHex} ({didName})\n";
-            // Add data length
-            Details += $"  Data Length: {dataBytes.Length} bytes\n";
-            // Add data hex
-            Details += $"  Data (hex): {dataHex}\n";
-            // Add ASCII preview
-            Details += $"  Data (ASCII): {asciiPreview}";
-            // High confidence for positive response
-            Confidence = 0.9;
+            // Extract data bytes after DID
+            frame.DataBytes = udsPayload.Length > 3 ? udsPayload[3..] : Array.Empty<byte>();
         }
-        else
+
+        return frame;
+    }
+
+    // Build clean Report Summary for documentation
+    private string BuildReportSummary(ParsedUdsFrame frame)
+    {
+        // Check for UDS Request
+        if (frame.IsRequest && frame.Did.HasValue)
         {
-            // Generic ISO 15765 payload without UDS decoding
-            Summary = $"ISO15765 {_direction} - payload (no UDS decode)";
-            // Build detailed information
-            Details = $"Direction: {_direction}\n";
-            // Add ID bytes
-            Details += $"ID Bytes: [{idHex}]\n";
-            // Add UDS payload
-            Details += $"UDS Payload: [{udsPayloadHex}]\n";
-            // Add payload length
-            Details += $"UDS Payload Length: {udsPayload.Length} bytes\n";
-            // Add ASCII preview
-            Details += $"ASCII Preview: {CreateAsciiPreview(udsPayload)}";
-            // Medium confidence
-            Confidence = 0.6;
+            return $"UDS ReadDataByIdentifier (0x22) → DID 0x{frame.Did.Value:X4}";
         }
+
+        // Check for UDS Negative Response
+        if (frame.IsNegativeResponse && frame.Nrc.HasValue)
+        {
+            if (frame.Did.HasValue)
+            {
+                return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
+            }
+            else
+            {
+                return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
+            }
+        }
+
+        // Check for UDS Positive Response
+        if (frame.IsPositiveResponse && frame.Did.HasValue)
+        {
+            int dataLength = frame.DataBytes?.Length ?? 0;
+            return $"UDS ReadDataByIdentifier (0x22) → DID 0x{frame.Did.Value:X4} — Positive Response ({dataLength} bytes)";
+        }
+
+        // Default fallback
+        return $"ISO15765 {_direction} - UDS Service 0x{frame.ServiceId:X2}";
+    }
+
+    // Build structured Technical Breakdown for engineering analysis
+    private string BuildTechnicalBreakdown(ParsedUdsFrame frame)
+    {
+        var breakdown = new System.Text.StringBuilder();
+
+        // Add Direction
+        breakdown.AppendLine($"Direction: {frame.Direction}");
+
+        // Add CAN ID
+        if (frame.IdBytes != null && frame.IdBytes.Length > 0)
+        {
+            string canId = BitConverter.ToString(frame.IdBytes).Replace("-", " ");
+            breakdown.AppendLine($"CAN ID: [{canId}]");
+        }
+
+        // Add Service information
+        if (frame.IsRequest)
+        {
+            breakdown.AppendLine($"Service: ReadDataByIdentifier (0x{frame.ServiceId:X2})");
+        }
+        else if (frame.IsNegativeResponse)
+        {
+            breakdown.AppendLine($"Service: Negative Response (0x7F) to {frame.ServiceName} (0x{frame.ServiceId:X2})");
+        }
+        else if (frame.IsPositiveResponse)
+        {
+            breakdown.AppendLine($"Service: Positive Response (0x{frame.ServiceId:X2})");
+        }
+
+        // Add DID if present
+        if (frame.Did.HasValue)
+        {
+            breakdown.AppendLine($"DID: 0x{frame.Did.Value:X4} ({frame.DidName})");
+        }
+
+        // Add Data Length if data bytes present
+        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
+        {
+            breakdown.AppendLine($"Data Length: {frame.DataBytes.Length} bytes");
+        }
+
+        // Add NRC if present
+        if (frame.Nrc.HasValue)
+        {
+            breakdown.AppendLine($"NRC: 0x{frame.Nrc.Value:X2} ({frame.NrcName})");
+        }
+
+        // Add Raw Bytes (UDS Payload)
+        if (frame.UdsPayload != null && frame.UdsPayload.Length > 0)
+        {
+            string payloadHex = BitConverter.ToString(frame.UdsPayload).Replace("-", " ");
+            breakdown.AppendLine($"Raw Bytes: [{payloadHex}]");
+        }
+
+        // Add ASCII Preview if data bytes present
+        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
+        {
+            byte[] previewBytes = frame.DataBytes.Length > 64 ? frame.DataBytes[0..64] : frame.DataBytes;
+            string asciiPreview = CreateAsciiPreview(previewBytes);
+            breakdown.AppendLine($"ASCII Preview: {asciiPreview}");
+
+            if (frame.DataBytes.Length > 64)
+            {
+                breakdown.AppendLine($"(showing first 64 of {frame.DataBytes.Length} bytes)");
+            }
+        }
+
+        return breakdown.ToString().TrimEnd();
     }
 
     // Helper method to get UDS service name from service ID (deterministic, no guessing)
