@@ -1,0 +1,5 @@
+<Solution>
+  <Project Path="AutoDecoder.Decoders/AutoDecoder.Decoders.csproj" />
+  <Project Path="AutoDecoder.Gui/AutoDecoder.Gui.csproj" />
+  <Project Path="AutoDecoder.Models/AutoDecoder.Models.csproj" />
+</Solution>
