@@ -1,5 +1,7 @@
 <Solution>
   <Project Path="AutoDecoder.Decoders/AutoDecoder.Decoders.csproj" />
+  <Project Path="AutoDecoder.Domain/AutoDecoder.Domain.csproj" Id="abe33ed9-7793-4892-a9cd-2cde9917977b" />
   <Project Path="AutoDecoder.Gui/AutoDecoder.Gui.csproj" />
   <Project Path="AutoDecoder.Models/AutoDecoder.Models.csproj" />
+  <Project Path="AutoDecoder.Protocols/AutoDecoder.Protocols.csproj" Id="f9e6e49e-5b8f-4834-a4fd-d0b6d9dafdd9" />
 </Solution>
