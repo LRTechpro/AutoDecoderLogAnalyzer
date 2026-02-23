@@ -1,4 +1,4 @@
-namespace AutoDecoder.Decoders;
+namespace AutoDecoder.Protocols.Decoders;
 
 // Sealed class to encapsulate the result of a decode operation
 public sealed class DecodeResult

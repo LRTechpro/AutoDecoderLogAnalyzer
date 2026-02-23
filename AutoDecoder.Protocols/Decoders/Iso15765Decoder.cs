@@ -1,4 +1,8 @@
-namespace AutoDecoder.Decoders;
+using AutoDecoder.Protocols.Decoders;
+using AutoDecoder.Protocols.Utilities;
+
+
+namespace AutoDecoder.Protocols.Decoders;
 
 // Static class for decoding ISO 15765 protocol lines with proper ID header handling
 public static class Iso15765Decoder

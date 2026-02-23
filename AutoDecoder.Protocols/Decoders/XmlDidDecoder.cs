@@ -1,4 +1,8 @@
-namespace AutoDecoder.Decoders;
+using AutoDecoder.Protocols.Decoders;
+using AutoDecoder.Protocols.Utilities;
+
+
+namespace AutoDecoder.Protocols.Decoders;
 
 // Static class for decoding XML lines containing DID information
 public static class XmlDidDecoder

@@ -1,4 +1,4 @@
-namespace AutoDecoder.Decoders;
+namespace AutoDecoder.Protocols.Utilities;
 
 // Static helper class for parsing and manipulating hexadecimal data
 public static class HexTools

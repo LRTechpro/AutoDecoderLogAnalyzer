@@ -1,7 +1,7 @@
 using AutoDecoder.Models;
 using System.Text.RegularExpressions;
 
-namespace AutoDecoder.Decoders;
+namespace AutoDecoder.Protocols.Utilities;
 
 // Summary of aggregated findings from decoded log lines
 public sealed class FindingsSummary

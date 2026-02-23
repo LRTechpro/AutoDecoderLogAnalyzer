@@ -1,422 +1,310 @@
-namespace AutoDecoder.Models;
+#nullable enable
+using System;
+using System.Collections.Generic;
+using System.Globalization;
+using System.Linq;
+using AutoDecoder.Models;
 
-// Derived class representing ISO 15765 protocol lines (CAN diagnostic protocol with ID header handling)
+
+
+
 public sealed class Iso15765Line : LogLine
 {
-    // Private field to store the direction of communication (TX or RX)
-    private string _direction = string.Empty;
-    // Private field to store all extracted bytes (including ID header)
+    private string _direction = "UNK";
     private byte[]? _allBytes;
 
-    // Override the Type property to return Iso15765
+    // Builders depend on these:
+    public string Direction => string.IsNullOrWhiteSpace(_direction) ? "UNK" : _direction;
+    public byte[] PayloadBytes => _allBytes ?? Array.Empty<byte>();
+    public byte[] IdBytes => (_allBytes != null && _allBytes.Length >= 4) ? _allBytes.Take(4).ToArray() : Array.Empty<byte>();
+    public byte[] UdsBytes => (_allBytes != null && _allBytes.Length > 4) ? _allBytes.Skip(4).ToArray() : Array.Empty<byte>();
+
     public override LineType Type => LineType.Iso15765;
 
-    // Constructor calls the base class constructor
-    public Iso15765Line(int lineNumber, string raw) : base(lineNumber, raw)
-    {
-    }
+    public Iso15765Line(int lineNumber, string raw) : base(lineNumber, raw) { }
 
-    // Parse and decode the ISO 15765 line format (handles 4-byte ID header + UDS payload)
     public override void ParseAndDecode()
     {
-        // Set default summary in case parsing fails
         Summary = "ISO15765 line";
-        // Set default details
         Details = $"Raw: {Raw}";
-        // Set initial confidence
         Confidence = 0.5;
 
-        // Try to detect the direction (TX or RX, case-insensitive)
-        if (Raw.IndexOf(" TX ", StringComparison.OrdinalIgnoreCase) >= 0 || 
-            Raw.IndexOf("->", StringComparison.OrdinalIgnoreCase) >= 0)
+        DetectDirection();
+
+        if (!TryExtractBracketBytes(Raw, out _allBytes))
         {
-            // Detected transmit direction
-            _direction = "TX";
-        }
-        else if (Raw.IndexOf(" RX ", StringComparison.OrdinalIgnoreCase) >= 0 || 
-                 Raw.IndexOf("<-", StringComparison.OrdinalIgnoreCase) >= 0)
-        {
-            // Detected receive direction
-            _direction = "RX";
-        }
-
-        // Try to extract the bracket payload using the Raw property
-        int bracketStart = Raw.IndexOf('[');
-        // Find the first closing bracket after opening bracket
-        int bracketEnd = bracketStart >= 0 ? Raw.IndexOf(']', bracketStart + 1) : -1;
-
-        // Check if both brackets were found
-        if (bracketStart >= 0 && bracketEnd > bracketStart)
-        {
-            // Extract the content between brackets
-            string bracketContent = Raw.Substring(bracketStart + 1, bracketEnd - bracketStart - 1);
-            // Split by comma to get individual hex values
-            string[] hexParts = bracketContent.Split(',');
-            // Create a list to hold the parsed bytes
-            List<byte> bytesList = new();
-
-            // Parse each hex string into a byte
-            foreach (string hexPart in hexParts)
-            {
-                // Trim whitespace from the hex string
-                string trimmed = hexPart.Trim();
-                // Skip empty parts
-                if (string.IsNullOrWhiteSpace(trimmed))
-                {
-                    // Skip empty entries
-                    continue;
-                }
-                // Try to parse the hex string
-                if (byte.TryParse(trimmed, System.Globalization.NumberStyles.HexNumber, null, out byte b))
-                {
-                    // Add the parsed byte to the list
-                    bytesList.Add(b);
-                }
-            }
-
-            // Store all parsed bytes (ID header + UDS payload)
-            _allBytes = bytesList.ToArray();
-
-            // Check if we have enough bytes (need more than just ID header)
-            if (_allBytes.Length > 4)
-            {
-                // Attempt to decode with ID header separation
-                DecodeWithIdHeader();
-            }
-            else if (_allBytes.Length > 0)
-            {
-                // Only ID bytes or less, no UDS payload
-                string idHex = BitConverter.ToString(_allBytes).Replace("-", " ");
-                // Set summary
-                Summary = $"ISO15765 {_direction} (ID only, no UDS payload)";
-                // Set details
-                Details = $"Direction: {_direction}\nID/Bytes: [{idHex}]\nNot enough bytes for UDS payload (need >4 bytes)";
-                // Lower confidence
-                Confidence = 0.5;
-            }
-            else
-            {
-                // No payload bytes extracted
-                Summary = $"ISO15765 {_direction} (empty payload)";
-                // Set details
-                Details = $"Direction: {_direction}\nNo payload bytes extracted.";
-                // Lower confidence
-                Confidence = 0.4;
-            }
-        }
-        else
-        {
-            // No brackets found, metadata only
-            Summary = $"ISO15765 {_direction} (metadata only)";
-            // Set details
-            Details = $"Direction: {_direction}\nNo payload brackets found.";
-            // Lower confidence
+            Summary = $"ISO15765 {Direction} (metadata only)";
+            Details = $"Direction: {Direction}\nNo payload brackets found.";
             Confidence = 0.4;
-        }
-    }
-
-    // Private method to decode with ID header separation (first 4 bytes = ID, rest = UDS payload)
-    private void DecodeWithIdHeader()
-    {
-        // Check if we have enough bytes
-        if (_allBytes == null || _allBytes.Length <= 4)
-        {
-            // Exit early if not enough bytes
             return;
         }
 
-        // Extract ID bytes (first 4 bytes)
-        byte[] idBytes = _allBytes.Take(4).ToArray();
-        // Extract UDS payload bytes (everything after first 4 bytes)
-        byte[] udsPayload = _allBytes.Skip(4).ToArray();
+        // ✅ FIX: CanId is int? (not int?), and CanNode is set here
+        CanId = TryExtractCanId(_allBytes);
 
-        // Parse UDS payload into structured frame
-        var frame = ParseUdsPayload(udsPayload, idBytes);
+        if (CanId.HasValue)
+            CanNode = ModuleAddressBook.Format(CanId.Value);
+        else
+            CanNode = null;
 
-        // Use new formatting helpers to build Summary and Details
-        Summary = BuildReportSummary(frame);
-        Details = BuildTechnicalBreakdown(frame);
-        Confidence = frame.IsRequest ? 0.9 : (frame.IsNegativeResponse ? 1.0 : 0.9);
+        if (_allBytes.Length <= 4)
+        {
+            string idHex = BitConverter.ToString(_allBytes).Replace("-", " ");
+            Summary = $"ISO15765 {Direction} (ID only, no UDS payload)";
+            Details =
+                $"Direction: {Direction}\n" +
+                $"ID/Bytes: [{idHex}]\n" +
+                $"CAN ID: {FormatCanId(CanId)}\n" +
+                $"Node: {CanNode ?? "(unknown)"}\n" +
+                "Not enough bytes for UDS payload (need >4 bytes)";
+            Confidence = 0.5;
+            return;
+        }
+
+        DecodeWithIdHeader();
     }
 
-    // Parse UDS payload into structured ParsedUdsFrame
+    private void DetectDirection()
+    {
+        if (Raw.IndexOf(" TX ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+            Raw.IndexOf("->", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _direction = "TX";
+        }
+        else if (Raw.IndexOf(" RX ", StringComparison.OrdinalIgnoreCase) >= 0 ||
+                 Raw.IndexOf("<-", StringComparison.OrdinalIgnoreCase) >= 0)
+        {
+            _direction = "RX";
+        }
+        else
+        {
+            _direction = "UNK";
+        }
+    }
+
+    private static bool TryExtractBracketBytes(string raw, out byte[] bytes)
+    {
+        bytes = Array.Empty<byte>();
+
+        int bracketStart = raw.IndexOf('[');
+        int bracketEnd = bracketStart >= 0 ? raw.IndexOf(']', bracketStart + 1) : -1;
+        if (bracketStart < 0 || bracketEnd <= bracketStart) return false;
+
+        string bracketContent = raw.Substring(bracketStart + 1, bracketEnd - bracketStart - 1);
+        string[] parts = bracketContent.Split(',');
+
+        var list = new List<byte>(parts.Length);
+        foreach (var p in parts)
+        {
+            var t = p.Trim();
+            if (t.Length == 0) continue;
+
+            if (byte.TryParse(t, NumberStyles.HexNumber, CultureInfo.InvariantCulture, out var b))
+                list.Add(b);
+        }
+
+        bytes = list.ToArray();
+        return bytes.Length > 0;
+    }
+
+    private void DecodeWithIdHeader()
+    {
+        if (_allBytes == null || _allBytes.Length <= 4) return;
+
+        byte[] idBytes = _allBytes.Take(4).ToArray();
+        byte[] udsPayload = _allBytes.Skip(4).ToArray();
+
+        var frame = ParseUdsPayload(udsPayload, idBytes);
+
+        Summary = BuildReportSummary(frame);
+        Details = BuildTechnicalBreakdown(frame);
+        Confidence = frame.IsNegativeResponse ? 1.0 : 0.9;
+    }
+
     private ParsedUdsFrame ParseUdsPayload(byte[] udsPayload, byte[] idBytes)
     {
         var frame = new ParsedUdsFrame
         {
-            Direction = _direction,
+            Direction = Direction,
             IdBytes = idBytes,
             UdsPayload = udsPayload
         };
 
-        // Check for UDS Request: ReadDataByIdentifier (0x22)
-        if (udsPayload.Length >= 3 && udsPayload[0] == 0x22)
+        if (udsPayload.Length < 1)
+            return frame;
+
+        byte sid = udsPayload[0];
+
+        // Request: 0x22 <DIDhi> <DIDlo>
+        if (sid == 0x22 && udsPayload.Length >= 3)
         {
             frame.IsRequest = true;
             frame.ServiceId = 0x22;
-            frame.ServiceName = "ReadDataByIdentifier";
+            frame.ServiceName = UdsLookup.GetServiceName(0x22);
 
-            // Extract DID
-            byte didHi = udsPayload[1];
-            byte didLo = udsPayload[2];
-            frame.Did = (ushort)((didHi << 8) | didLo);
-            frame.DidName = GetDidName(frame.Did.Value);
+            frame.Did = (ushort)((udsPayload[1] << 8) | udsPayload[2]);
+            frame.DidName = UdsLookup.GetDidName(frame.Did.Value);
+            return frame;
         }
-        // Check for UDS Negative Response (0x7F)
-        else if (udsPayload.Length >= 3 && udsPayload[0] == 0x7F)
+
+        // Negative response: 0x7F <origSID> <NRC> [optional context bytes...]
+        if (sid == 0x7F && udsPayload.Length >= 3)
         {
             frame.IsNegativeResponse = true;
-            frame.ServiceId = udsPayload[1]; // Original service ID
-            frame.ServiceName = GetUdsServiceName(frame.ServiceId);
-            frame.Nrc = udsPayload[2];
-            frame.NrcName = GetUdsNrcMeaning(frame.Nrc.Value);
 
-            // Try to extract DID if this was a ReadDID request
-            if (frame.ServiceId == 0x22 && udsPayload.Length >= 5)
+            byte originalSid = udsPayload[1];
+            byte nrc = udsPayload[2];
+
+            frame.ServiceId = originalSid;
+            frame.ServiceName = UdsLookup.GetServiceName(originalSid);
+
+            frame.Nrc = nrc;
+            frame.NrcName = UdsLookup.GetNrcMeaning(nrc);
+
+            // [0x7F, 0x22, NRC, DIDhi, DIDlo]
+            if (originalSid == 0x22 && udsPayload.Length >= 5)
             {
-                byte didHi = udsPayload[3];
-                byte didLo = udsPayload[4];
-                frame.Did = (ushort)((didHi << 8) | didLo);
-                frame.DidName = GetDidName(frame.Did.Value);
+                frame.Did = (ushort)((udsPayload[3] << 8) | udsPayload[4]);
+                frame.DidName = UdsLookup.GetDidName(frame.Did.Value);
             }
+
+            return frame;
         }
-        // Check for UDS Positive Response to ReadDataByIdentifier (0x62)
-        else if (udsPayload.Length >= 3 && udsPayload[0] == 0x62)
+
+        // Positive response to 0x22 is 0x62
+        if (sid == 0x62 && udsPayload.Length >= 3)
         {
             frame.IsPositiveResponse = true;
-            frame.ServiceId = 0x62;
-            frame.ServiceName = "ReadDataByIdentifier";
 
-            // Extract DID
-            byte didHi = udsPayload[1];
-            byte didLo = udsPayload[2];
-            frame.Did = (ushort)((didHi << 8) | didLo);
-            frame.DidName = GetDidName(frame.Did.Value);
+            frame.ServiceId = 0x22;
+            frame.ServiceName = UdsLookup.GetServiceName(0x22);
 
-            // Extract data bytes after DID
+            frame.Did = (ushort)((udsPayload[1] << 8) | udsPayload[2]);
+            frame.DidName = UdsLookup.GetDidName(frame.Did.Value);
+
             frame.DataBytes = udsPayload.Length > 3 ? udsPayload[3..] : Array.Empty<byte>();
+            return frame;
         }
 
+        // Unknown/other service
+        frame.ServiceId = sid;
+        frame.ServiceName = UdsLookup.GetServiceName(sid);
         return frame;
     }
 
-    // Build clean Report Summary for documentation
     private string BuildReportSummary(ParsedUdsFrame frame)
     {
-        // Check for UDS Request
-        if (frame.IsRequest && frame.Did.HasValue)
-        {
-            return $"UDS ReadDataByIdentifier (0x22) → DID 0x{frame.Did.Value:X4}";
-        }
+        // Include Node if available
+        string nodePart = CanNode != null ? $" | {CanNode}" : "";
 
-        // Check for UDS Negative Response
+        if (frame.IsRequest && frame.Did.HasValue)
+            return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4}{nodePart}";
+
         if (frame.IsNegativeResponse && frame.Nrc.HasValue)
         {
             if (frame.Did.HasValue)
-            {
-                return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
-            }
-            else
-            {
-                return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName})";
-            }
+                return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName}){nodePart}";
+
+            return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) — NRC 0x{frame.Nrc.Value:X2} ({frame.NrcName}){nodePart}";
         }
 
-        // Check for UDS Positive Response
         if (frame.IsPositiveResponse && frame.Did.HasValue)
         {
-            int dataLength = frame.DataBytes?.Length ?? 0;
-            return $"UDS ReadDataByIdentifier (0x22) → DID 0x{frame.Did.Value:X4} — Positive Response ({dataLength} bytes)";
+            int len = frame.DataBytes?.Length ?? 0;
+            return $"UDS {frame.ServiceName} (0x{frame.ServiceId:X2}) → DID 0x{frame.Did.Value:X4} — Positive Response ({len} bytes){nodePart}";
         }
 
-        // Default fallback
-        return $"ISO15765 {_direction} - UDS Service 0x{frame.ServiceId:X2}";
+        return $"ISO15765 {Direction} — Service 0x{frame.ServiceId:X2} ({frame.ServiceName}){nodePart}";
     }
 
-    // Build structured Technical Breakdown for engineering analysis
     private string BuildTechnicalBreakdown(ParsedUdsFrame frame)
     {
-        var breakdown = new System.Text.StringBuilder();
+        var b = new System.Text.StringBuilder();
 
-        // Add Direction
-        breakdown.AppendLine($"Direction: {frame.Direction}");
+        b.AppendLine($"Direction: {frame.Direction}");
 
-        // Add CAN ID
-        if (frame.IdBytes != null && frame.IdBytes.Length > 0)
+        // ✅ Prefer showing computed CAN ID + Node (what you need for UI)
+        b.AppendLine($"CAN ID: {FormatCanId(CanId)}");
+        if (!string.IsNullOrWhiteSpace(CanNode))
+            b.AppendLine($"Node: {CanNode}");
+
+        // Keep the raw 4 ID bytes too (useful for verification)
+        if (frame.IdBytes is { Length: > 0 })
         {
-            string canId = BitConverter.ToString(frame.IdBytes).Replace("-", " ");
-            breakdown.AppendLine($"CAN ID: [{canId}]");
+            string idHex = BitConverter.ToString(frame.IdBytes).Replace("-", " ");
+            b.AppendLine($"ID Bytes: [{idHex}]");
         }
 
-        // Add Service information
         if (frame.IsRequest)
-        {
-            breakdown.AppendLine($"Service: ReadDataByIdentifier (0x{frame.ServiceId:X2})");
-        }
+            b.AppendLine($"Service: {frame.ServiceName} (0x{frame.ServiceId:X2}) [Request]");
         else if (frame.IsNegativeResponse)
-        {
-            breakdown.AppendLine($"Service: Negative Response (0x7F) to {frame.ServiceName} (0x{frame.ServiceId:X2})");
-        }
+            b.AppendLine($"Service: Negative Response (0x7F) to {frame.ServiceName} (0x{frame.ServiceId:X2})");
         else if (frame.IsPositiveResponse)
-        {
-            breakdown.AppendLine($"Service: Positive Response (0x{frame.ServiceId:X2})");
-        }
+            b.AppendLine($"Service: {frame.ServiceName} (0x{frame.ServiceId:X2}) [Positive Response]");
+        else
+            b.AppendLine($"Service: {frame.ServiceName} (0x{frame.ServiceId:X2})");
 
-        // Add DID if present
         if (frame.Did.HasValue)
-        {
-            breakdown.AppendLine($"DID: 0x{frame.Did.Value:X4} ({frame.DidName})");
-        }
+            b.AppendLine($"DID: 0x{frame.Did.Value:X4} ({frame.DidName})");
 
-        // Add Data Length if data bytes present
-        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
-        {
-            breakdown.AppendLine($"Data Length: {frame.DataBytes.Length} bytes");
-        }
+        if (frame.DataBytes is { Length: > 0 })
+            b.AppendLine($"Data Length: {frame.DataBytes.Length} bytes");
 
-        // Add NRC if present
         if (frame.Nrc.HasValue)
-        {
-            breakdown.AppendLine($"NRC: 0x{frame.Nrc.Value:X2} ({frame.NrcName})");
-        }
+            b.AppendLine($"NRC: 0x{frame.Nrc.Value:X2} ({frame.NrcName})");
 
-        // Add Raw Bytes (UDS Payload)
-        if (frame.UdsPayload != null && frame.UdsPayload.Length > 0)
+        if (frame.UdsPayload is { Length: > 0 })
         {
             string payloadHex = BitConverter.ToString(frame.UdsPayload).Replace("-", " ");
-            breakdown.AppendLine($"Raw Bytes: [{payloadHex}]");
+            b.AppendLine($"Raw Bytes: [{payloadHex}]");
         }
 
-        // Add ASCII Preview if data bytes present
-        if (frame.DataBytes != null && frame.DataBytes.Length > 0)
-        {
-            byte[] previewBytes = frame.DataBytes.Length > 64 ? frame.DataBytes[0..64] : frame.DataBytes;
-            string asciiPreview = CreateAsciiPreview(previewBytes);
-            breakdown.AppendLine($"ASCII Preview: {asciiPreview}");
-
-            if (frame.DataBytes.Length > 64)
-            {
-                breakdown.AppendLine($"(showing first 64 of {frame.DataBytes.Length} bytes)");
-            }
-        }
-
-        return breakdown.ToString().TrimEnd();
+        return b.ToString().TrimEnd();
     }
 
-    // Helper method to get UDS service name from service ID (deterministic, no guessing)
-    private static string GetUdsServiceName(byte sid)
+    // ✅ FIX: return int? (not int?) to match LogLine.CanId
+    private static int? TryExtractCanId(byte[]? bytes)
     {
-        // Return service name based on service ID
-        return sid switch
-        {
-            // DiagnosticSessionControl
-            0x10 => "DiagnosticSessionControl",
-            // ECUReset
-            0x11 => "ECUReset",
-            // ReadDataByIdentifier
-            0x22 => "ReadDataByIdentifier",
-            // SecurityAccess
-            0x27 => "SecurityAccess",
-            // WriteDataByIdentifier
-            0x2E => "WriteDataByIdentifier",
-            // RoutineControl
-            0x31 => "RoutineControl",
-            // TesterPresent
-            0x3E => "TesterPresent",
-            // NegativeResponse
-            0x7F => "NegativeResponse",
-            // Unknown service (deterministic label)
-            _ => "Unknown"
-        };
+        if (bytes == null || bytes.Length < 4) return null;
+
+        // Common case in your logs: 00 00 07 D0 => 0x07D0 (11-bit style stored in low 2 bytes)
+        if (bytes[0] == 0x00 && bytes[1] == 0x00)
+            return (bytes[2] << 8) | bytes[3];
+
+        // Full 32-bit value for other formats (still stored as int)
+        int v = (bytes[0] << 24) | (bytes[1] << 16) | (bytes[2] << 8) | bytes[3];
+        return v;
     }
 
-    // Helper method to get UDS NRC (Negative Response Code) meaning (deterministic, no guessing)
-    private static string GetUdsNrcMeaning(byte nrc)
+    private static string FormatCanId(int? canId)
     {
-        // Return NRC meaning based on code
-        return nrc switch
-        {
-            // GeneralReject
-            0x10 => "GeneralReject",
-            // ServiceNotSupported
-            0x11 => "ServiceNotSupported",
-            // SubFunctionNotSupported
-            0x12 => "SubFunctionNotSupported",
-            // IncorrectMessageLengthOrInvalidFormat
-            0x13 => "IncorrectMessageLengthOrInvalidFormat",
-            // ConditionsNotCorrect
-            0x22 => "ConditionsNotCorrect",
-            // RequestOutOfRange
-            0x31 => "RequestOutOfRange",
-            // SecurityAccessDenied
-            0x33 => "SecurityAccessDenied",
-            // InvalidKey
-            0x35 => "InvalidKey",
-            // ExceededNumberOfAttempts
-            0x36 => "ExceededNumberOfAttempts",
-            // RequiredTimeDelayNotExpired
-            0x37 => "RequiredTimeDelayNotExpired",
-            // ResponsePending
-            0x78 => "ResponsePending",
-            // Unknown NRC (deterministic label)
-            _ => "Unknown"
-        };
+        if (!canId.HasValue) return "(none)";
+        int v = canId.Value;
+        return (v > 0x7FF) ? $"0x{v:X8}" : $"0x{v:X3}";
     }
 
-    // Helper method to get DID name from DID value (deterministic, no guessing)
-    private static string GetDidName(ushort did)
+    // ---- Timestamp helpers (use ONLY the one that matches LogLine.Timestamp type) ----
+    private static string? TryParseTimestampPrefixString(string raw)
     {
-        // Return DID name based on value
-        return did switch
-        {
-            // Strategy
-            0xF188 => "Strategy",
-            // PartII_Spec
-            0xF110 => "PartII_Spec",
-            // CoreAssembly
-            0xF111 => "CoreAssembly",
-            // Assembly
-            0xF113 => "Assembly",
-            // Calibration
-            0xF124 => "Calibration",
-            // DirectConfiguration
-            0xDE00 => "DirectConfiguration",
-            // Unknown DID (deterministic label)
-            _ => "Unknown"
-        };
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        int space = raw.IndexOf(' ');
+        if (space <= 0) return null;
+
+        string token = raw.Substring(0, space).Trim();
+        return DateTime.TryParse(token, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out _)
+            ? token
+            : null;
     }
 
-    // Helper method to create ASCII preview from bytes (printable chars or '.')
-    private static string CreateAsciiPreview(byte[] bytes)
+    private static DateTime? TryParseTimestampPrefixDateTime(string raw)
     {
-        // Check if bytes array is empty
-        if (bytes.Length == 0)
-        {
-            // Return placeholder for empty
-            return "(empty)";
-        }
+        if (string.IsNullOrWhiteSpace(raw)) return null;
+        int space = raw.IndexOf(' ');
+        if (space <= 0) return null;
 
-        // Create character array for preview
-        char[] chars = new char[bytes.Length];
-        // Iterate through each byte
-        for (int i = 0; i < bytes.Length; i++)
-        {
-            // Get the current byte
-            byte b = bytes[i];
-            // Check if byte is printable ASCII (32-126)
-            if (b >= 32 && b <= 126)
-            {
-                // Use the ASCII character
-                chars[i] = (char)b;
-            }
-            else
-            {
-                // Use dot for non-printable
-                chars[i] = '.';
-            }
-        }
-
-        // Convert char array to string and return
-        return new string(chars);
+        string token = raw.Substring(0, space).Trim();
+        return DateTime.TryParse(token, CultureInfo.InvariantCulture, DateTimeStyles.AssumeLocal, out var dt)
+            ? dt
+            : null;
     }
 }

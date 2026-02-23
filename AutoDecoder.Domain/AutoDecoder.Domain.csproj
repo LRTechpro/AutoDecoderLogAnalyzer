@@ -6,4 +6,9 @@
     <Nullable>enable</Nullable>
   </PropertyGroup>
 
+  <ItemGroup>
+    <ProjectReference Include="..\AutoDecoder.Models\AutoDecoder.Models.csproj" />
+    <ProjectReference Include="..\AutoDecoder.Protocols\AutoDecoder.Protocols.csproj" />
+  </ItemGroup>
+
 </Project>

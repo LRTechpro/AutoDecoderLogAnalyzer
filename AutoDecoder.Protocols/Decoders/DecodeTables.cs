@@ -1,4 +1,6 @@
-namespace AutoDecoder.Decoders;
+
+
+namespace AutoDecoder.Protocols.Decoders;
 
 // Static class containing lookup tables for UDS (Unified Diagnostic Services) decoding
 public static class DecodeTables

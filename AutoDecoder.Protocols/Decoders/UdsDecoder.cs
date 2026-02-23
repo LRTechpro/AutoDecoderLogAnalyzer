@@ -1,6 +1,8 @@
 using AutoDecoder.Models;
+using AutoDecoder.Protocols.Utilities;
+using AutoDecoder.Protocols.Decoders; // so DecodeResult resolves even if namespace differs in file
 
-namespace AutoDecoder.Decoders;
+namespace AutoDecoder.Protocols.Decoders;
 
 // Static class for decoding UDS (Unified Diagnostic Services) payloads
 public static class UdsDecoder

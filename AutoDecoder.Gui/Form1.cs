@@ -1,699 +1,1041 @@
-using AutoDecoder.Models;
-using AutoDecoder.Decoders;
-using System.ComponentModel;
+// ================================================================
+// File: Form1.cs
+// Project: AutoDecoder.Gui
+// Course: MS539 Programming Concepts (Graduate)
+// Assignment: OOP classes/objects/inheritance/encapsulation + GUI
+// Author: Harold Watkins
+// Purpose:
+//   This WinForms UI (code-only) loads automotive log text, classifies each
+//   line into a LogLine-derived type (inheritance), decodes details, supports
+//   filtering/searching, and shows a summary of UDS findings (NRCs/DIDs) and
+//   multi-line UDS conversations (ISO-TP reassembly + request/response pairing).
+// ================================================================
+
+#nullable enable
+
+using AutoDecoder.Models;                    // LogLine + LogSession + derived line types (Models DLL).
+using AutoDecoder.Protocols.Classifiers;     // LineClassifier logic (Protocols DLL).
+using AutoDecoder.Protocols.Utilities;       // FindingsAggregator + UdsTables (Protocols DLL).
+using AutoDecoder.Protocols.Conversations;   // ISO-TP / UDS conversation builders (Protocols DLL).
+using System;                                // Base .NET types.
+using System.Collections.Generic;            // List<T>, Dictionary<TKey,TValue>.
+using System.ComponentModel;                 // BindingList<T> for UI binding.
+using System.Drawing;                        // Color, Font.
+using System.IO;                             // File.ReadAllLines, Path.
+using System.Linq;                           // LINQ.
+using System.Windows.Forms;                  // WinForms UI components.
 
 namespace AutoDecoder.Gui
 {
-    // Main form for the AutoDecoder application with filtering support
-    public partial class Form1 : Form
+    /// <summary>
+    /// Main application window.
+    /// </summary>
+    public class Form1 : Form
     {
-        // Master list holding all decoded log lines (never filtered)
-        private BindingList<LogLine> _allLogLines;
-        // Filtered list bound to the DataGridView
-        private BindingList<LogLine> _filteredLogLines;
+        // ---------------------------
+        // Protocol-aware derived data
+        // ---------------------------
+        private List<IsoTpPdu> _pdus = new();
+        private List<UdsTransaction> _transactions = new();
 
-        // Constructor initializes the form and binding lists
+        // ---------------------------
+        // Split containers for layout
+        // ---------------------------
+        private SplitContainer decodedRootSplit = null!;
+        private SplitContainer decodedBottomSplit = null!;
+        private SplitContainer rawDecodedSplit = null!;
+
+        // ---------------------------
+        // Sessions (multi-log support)
+        // ---------------------------
+        private const int MaxSessions = 5;
+        private readonly BindingList<LogSession> _sessions = new();
+        private LogSession? _activeSession;
+
+        // ---------------------------
+        // Data (lines + filtered view)
+        // ---------------------------
+        private BindingList<LogLine> _allLogLines = new();
+        private BindingList<LogLine> _filteredLogLines = new();
+
+        // ---------------------------
+        // UI controls (code-only UI)
+        // ---------------------------
+        private SplitContainer splitMain = null!;
+        private ListBox lstSessions = null!;
+        private Button btnAddSession = null!;
+        private Button btnCloseSession = null!;
+
+        private TabControl tabControl = null!;
+        private TabPage tabDecoded = null!;
+        private TabPage tabSummary = null!;
+
+        private DataGridView dgvLines = null!;
+        private RichTextBox rtbRaw = null!;
+        private RichTextBox rtbDecoded = null!;
+
+        private TextBox txtSearch = null!;
+        private ComboBox cboTypeFilter = null!;
+        private CheckBox chkUdsOnly = null!;
+        private CheckBox chkMatchAllTerms = null!;
+
+        private Button btnLoadFile = null!;
+        private Button btnLoadSample = null!;
+        private Button btnPaste = null!;
+        private Button btnClear = null!;
+
+        private Label lblStatusTotal = null!;
+        private Label lblStatusIso = null!;
+        private Label lblStatusXml = null!;
+        private Label lblStatusUnknown = null!;
+
+        private Label lblSummaryIso = null!;
+        private Label lblSummaryUds = null!;
+        private Label lblSummaryUnknown = null!;
+
+        private ListView lvNrc = null!;
+        private ListView lvDid = null!;
+
+        // Ensures we only wire DataBindingComplete once
+        private bool _gridBindingHooked;
+
         public Form1()
         {
-            // Initialize form components
-            InitializeComponent();
-            // Create new binding list for all log lines (master list)
-            _allLogLines = new BindingList<LogLine>();
-            // Create new binding list for filtered log lines (display list)
-            _filteredLogLines = new BindingList<LogLine>();
-            // Bind the data grid to the filtered log lines list
-            dgvLines.DataSource = _filteredLogLines;
-
-            // Configure DataGridView column sizing after data binding
-            ConfigureDataGridColumns();
-            // Wire up row highlighting event handler
-            dgvLines.RowPrePaint += DgvLines_RowPrePaint;
+            BuildUi();
+            WireEvents();
+            CreateNewSession(makeActive: true);
         }
 
-        // Configure DataGridView columns for proper sizing and user control
-        private void ConfigureDataGridColumns()
+        // ================================================================
+        // UI BUILD
+        // ================================================================
+
+        private void BuildUi()
         {
-            // Disable automatic column sizing (allows manual control)
-            dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
-            // Allow users to resize columns manually
-            dgvLines.AllowUserToResizeColumns = true;
-            // Allow users to reorder columns by dragging headers
-            dgvLines.AllowUserToOrderColumns = true;
+            Text = "AutoDecoder Workbench (Code-Only)";
+            Width = 1400;
+            Height = 850;
+            StartPosition = FormStartPosition.CenterScreen;
 
-            // Wait for columns to be auto-generated from data binding
-            if (dgvLines.Columns.Count == 0)
+            splitMain = new SplitContainer
             {
-                // Columns not yet created, will configure on first data load
-                dgvLines.DataBindingComplete += (s, e) =>
-                {
-                    // Configure columns once after first data binding
-                    if (dgvLines.Columns.Count > 0)
-                    {
-                        // Apply column sizing rules
-                        ApplyColumnSizing();
-                    }
-                };
-            }
-            else
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical
+            };
+            Controls.Add(splitMain);
+
+            // Left panel
+            var leftTop = new Panel { Dock = DockStyle.Top, Height = 78 };
+            btnAddSession = new Button { Text = "New Session", Dock = DockStyle.Top, Height = 36 };
+            btnCloseSession = new Button { Text = "Close Session", Dock = DockStyle.Top, Height = 36 };
+            leftTop.Controls.Add(btnCloseSession);
+            leftTop.Controls.Add(btnAddSession);
+
+            lstSessions = new ListBox
             {
-                // Columns already exist, configure now
-                ApplyColumnSizing();
-            }
-        }
-
-        // Apply specific sizing rules to DataGridView columns
-        private void ApplyColumnSizing()
-        {
-            // Step 1: Auto-size all columns initially to get good default widths
-            dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.DisplayedCells;
-
-            // Step 2: Override specific columns with custom widths
-            var summaryCol = dgvLines.Columns["Summary"];
-            if (summaryCol != null)
-            {
-                // Rename column header to "Report Summary"
-                summaryCol.HeaderText = "Report Summary";
-                // Set fixed width for report summary
-                summaryCol.Width = 400;
-            }
-
-            var detailsCol = dgvLines.Columns["Details"];
-            if (detailsCol != null)
-            {
-                // Rename column header to "Technical Breakdown"
-                detailsCol.HeaderText = "Technical Breakdown";
-                // Set wider default width for technical breakdown
-                detailsCol.Width = 500;
-            }
-
-            var rawCol = dgvLines.Columns["Raw"];
-            if (rawCol != null)
-            {
-                // Set fixed width for raw data
-                rawCol.Width = 300;
-            }
-
-            // Step 3: Switch ALL columns to None to enable manual resizing
-            dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
-            foreach (DataGridViewColumn column in dgvLines.Columns)
-            {
-                // Set each column to None (allows manual resize)
-                column.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-                // Explicitly enable resizing for each column
-                column.Resizable = DataGridViewTriState.True;
-            }
-        }
-
-        // Event handler for row pre-paint to apply visual highlighting
-        private void DgvLines_RowPrePaint(object? sender, DataGridViewRowPrePaintEventArgs e)
-        {
-            // Check if row index is valid
-            if (e.RowIndex < 0 || e.RowIndex >= dgvLines.Rows.Count)
-            {
-                // Skip invalid row indices
-                return;
-            }
-
-            // Get the row being painted
-            DataGridViewRow row = dgvLines.Rows[e.RowIndex];
-            // Get the LogLine object bound to this row
-            LogLine? logLine = row.DataBoundItem as LogLine;
-
-            // Check if we have a valid LogLine object
-            if (logLine == null)
-            {
-                // No data bound, use default color
-                row.DefaultCellStyle.BackColor = Color.White;
-                // Exit early
-                return;
-            }
-
-            // Apply color based on line type and content
-            if (logLine.Type == LineType.Iso15765)
-            {
-                // Check for UDS Negative Response (0x7F)
-                if (logLine.Details?.Contains("Negative Response", StringComparison.OrdinalIgnoreCase) == true ||
-                    logLine.Details?.Contains("0x7F", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    // Highlight negative responses in light salmon
-                    row.DefaultCellStyle.BackColor = Color.LightSalmon;
-                    // Exit after setting color
-                    return;
-                }
-
-                // Check for UDS Request
-                if (logLine.Details?.Contains("UDS Request", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    // Highlight requests in light sky blue
-                    row.DefaultCellStyle.BackColor = Color.LightSkyBlue;
-                    // Exit after setting color
-                    return;
-                }
-
-                // Check for UDS Positive Response (0x62)
-                if (logLine.Details?.Contains("UDS Positive Response", StringComparison.OrdinalIgnoreCase) == true ||
-                    logLine.Details?.Contains("(0x62)", StringComparison.OrdinalIgnoreCase) == true)
-                {
-                    // Highlight positive responses in light green
-                    row.DefaultCellStyle.BackColor = Color.LightGreen;
-                    // Exit after setting color
-                    return;
-                }
-            }
-
-            // Default color for all other rows
-            row.DefaultCellStyle.BackColor = Color.White;
-        }
-
-        // Event handler for Load File button click
-        private void BtnLoadFile_Click(object? sender, EventArgs e)
-        {
-            // Create OpenFileDialog for file selection
-            using OpenFileDialog ofd = new OpenFileDialog();
-            // Set dialog title
-            ofd.Title = "Select Log File";
-            // Set file filter for text and log files
-            ofd.Filter = "Text Files (*.txt)|*.txt|Log Files (*.log)|*.log|All Files (*.*)|*.*";
-
-            // Show dialog and check if user selected a file
-            if (ofd.ShowDialog() == DialogResult.OK)
-            {
-                // Try to load the selected file
-                try
-                {
-                    // Read all lines from the selected file
-                    string[] lines = File.ReadAllLines(ofd.FileName);
-                    // Load the lines into the application
-                    LoadLines(lines);
-                }
-                // Catch any exceptions during file loading
-                catch (Exception ex)
-                {
-                    // Show error message to user without crashing
-                    MessageBox.Show($"Error loading file: {ex.Message}", "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
-                }
-            }
-        }
-
-        // Event handler for Load Sample button click (updated with timestamp prefixes)
-        private void BtnLoadSample_Click(object? sender, EventArgs e)
-        {
-            // Create array of sample log lines demonstrating various formats including timestamp prefixes
-            string[] sampleLines = new[]
-            {
-                // Sample ISO15765 line with timestamp prefix and UDS negative response (0x7F 0x22 0x78 = ResponsePending)
-                "2025-10-21T10:23:45.123 ISO15765 RX <- [00,00,07,D8,7F,22,78]",
-                // Sample ISO15765 line with UDS positive response (0x62 DID 0x806A)
-                "2025-10-21T10:23:45.200 ISO15765 TX -> [00,00,07,D0,62,80,6A,41,42,43,44]",
-                // Sample ISO15765 line with another negative response
-                "2025-10-21T10:23:46.000 ISO15765 RX <- [00,00,07,D8,7F,10,11]",
-                // Sample XML line with DID F188
-                "<ns3:didValue didValue=\"F188\" type=\"Strategy\"><ns3:Response>4D59535452415445475931</ns3:Response></ns3:didValue>",
-                // Sample XML line with DID F110
-                "<didValue=\"F110\"><Response>50415254325350454331</Response></didValue>",
-                // Sample XML line with DID DE00
-                "<ns3:didValue didValue=\"DE00\" type=\"DirectConfig\"><ns3:Response>434F4E464947</ns3:Response></ns3:didValue>",
-                // Sample hex line in bracket notation
-                "[48,65,6C,6C,6F,20,57,6F,72,6C,64]",
-                // Sample long hex string
-                "48656C6C6F2C20746869732069732061206C6F6E672068657820737472696E67",
-                // Sample ASCII text line
-                "This is a plain ASCII text log entry with timestamp 2024-01-15",
-                // Another ISO15765 line with different service and timestamp
-                "2025-10-21T10:23:47.000 ISO15765 TX -> [00,00,07,D0,22,F1,88]",
-                // ISO15765 positive response to previous request
-                "2025-10-21T10:23:47.100 ISO15765 RX <- [00,00,07,D8,62,F1,88,56,45,52,53,49,4F,4E,31]",
-                // Sample with TesterPresent service
-                "2025-10-21T10:23:48.000 ISO15765 TX -> [00,00,07,D0,3E,00]",
-                // Positive response to TesterPresent
-                "2025-10-21T10:23:48.050 ISO15765 RX <- [00,00,07,D8,7E,00]",
-                // Sample ASCII log entry
-                "DEBUG: Starting diagnostic session",
-                // Sample XML with calibration DID
-                "<ns3:didValue didValue=\"F124\" type=\"Calibration\"><ns3:Response>43414C4942</ns3:Response></ns3:didValue>",
-                // More ASCII entries to reach 50+ lines
-                "INFO: Connecting to ECU",
-                "INFO: Sending diagnostic request",
-                "INFO: Waiting for response",
-                "DEBUG: Response received successfully",
-                "INFO: Processing response data",
-                // More ISO15765 examples with timestamps
-                "2025-10-21T10:24:00.000 ISO15765 TX -> [00,00,07,D0,10,01]",
-                "2025-10-21T10:24:00.050 ISO15765 RX <- [00,00,07,D8,50,01]",
-                "2025-10-21T10:24:01.000 ISO15765 TX -> [00,00,07,D0,27,01]",
-                "2025-10-21T10:24:01.050 ISO15765 RX <- [00,00,07,D8,67,01,12,34,56,78]",
-                // More text entries
-                "INFO: Security access granted",
-                "DEBUG: Writing configuration data",
-                "INFO: Configuration write successful",
-                "INFO: Verifying configuration",
-                "DEBUG: Verification passed",
-                // More sample lines to exceed 50 total
-                "INFO: Operation completed successfully",
-                "DEBUG: Disconnecting from ECU",
-                "INFO: Session ended",
-                "TRACE: Cleanup operations started",
-                "TRACE: Resources released",
-                "INFO: Application ready for next operation",
-                // Additional hex samples
-                "[01,02,03,04,05,06,07,08,09,0A,0B,0C,0D,0E,0F]",
-                "DEADBEEFCAFEBABE0123456789ABCDEF",
-                // Additional XML samples
-                "<ns3:didValue didValue=\"F111\" type=\"CoreAssembly\"><ns3:Response>434F5245</ns3:Response></ns3:didValue>",
-                "<ns3:didValue didValue=\"F113\" type=\"Assembly\"><ns3:Response>4153534D</ns3:Response></ns3:didValue>",
-                // More text entries
-                "INFO: Diagnostic scan complete",
-                "INFO: No errors detected",
-                "DEBUG: System status: OK",
-                "INFO: Ready for next command",
-                // More ISO15765 with different NRCs and timestamps
-                "2025-10-21T10:25:00.000 ISO15765 RX <- [00,00,07,D8,7F,22,31]",
-                "2025-10-21T10:25:01.000 ISO15765 RX <- [00,00,07,D8,7F,27,35]",
-                "2025-10-21T10:25:02.000 ISO15765 RX <- [00,00,07,D8,7F,2E,22]",
-                // More text to ensure 50+ lines
-                "INFO: Test sequence initiated",
-                "DEBUG: Parameter validation passed",
-                "INFO: Executing test case 1",
-                "INFO: Executing test case 2",
-                "INFO: Executing test case 3",
-                "DEBUG: All test cases passed",
-                "INFO: Test sequence completed"
+                Dock = DockStyle.Top,
+                IntegralHeight = true
             };
 
-            // Load the sample lines into the application
-            LoadLines(sampleLines);
+            // Only show enough height for MaxSessions rows
+            lstSessions.Height = (lstSessions.ItemHeight * MaxSessions) + 6;
+            lstSessions.DisplayMember = "Name";
+
+            var leftFill = new Panel { Dock = DockStyle.Fill };
+
+            // Dock order: fill first, then top-docked controls
+            splitMain.Panel1.Controls.Add(leftFill);
+            splitMain.Panel1.Controls.Add(lstSessions);
+            splitMain.Panel1.Controls.Add(leftTop);
+
+            // Right panel: tabs
+            tabControl = new TabControl { Dock = DockStyle.Fill };
+            tabDecoded = new TabPage("Decoded");
+            tabSummary = new TabPage("Summary");
+            tabControl.TabPages.Add(tabDecoded);
+            tabControl.TabPages.Add(tabSummary);
+            splitMain.Panel2.Controls.Add(tabControl);
+
+            BuildDecodedTab();
+            BuildSummaryTab();
         }
 
-        // Event handler for Clear button click
-        private void BtnClear_Click(object? sender, EventArgs e)
+        private void BuildDecodedTab()
         {
-            // Clear the master log lines list
-            _allLogLines.Clear();
-            // Clear the filtered log lines list
-            _filteredLogLines.Clear();
-            // Clear raw text box
-            rtbRaw.Clear();
-            // Clear decoded text box
-            rtbDecoded.Clear();
-            // Update status bar counts
+            decodedRootSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                FixedPanel = FixedPanel.Panel1
+            };
+            tabDecoded.Controls.Add(decodedRootSplit);
+
+            var top = new TableLayoutPanel
+            {
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 10,
+                RowCount = 2,
+                Padding = new Padding(4),
+                Margin = new Padding(0)
+            };
+
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));   // LoadFile
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));   // LoadSample
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));   // Paste
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));   // Clear
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));   // Search label
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));   // Search textbox
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));   // Type label
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));  // Type dropdown
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));   // UDS only
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));  // Match all
+
+            top.RowStyles.Clear();
+            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
+
+            btnLoadFile = new Button { Text = "Load File", Dock = DockStyle.Fill, Margin = new Padding(2) };
+            btnLoadSample = new Button { Text = "Load Sample", Dock = DockStyle.Fill, Margin = new Padding(2) };
+            btnPaste = new Button { Text = "Paste", Dock = DockStyle.Fill, Margin = new Padding(2) };
+            btnClear = new Button { Text = "Clear", Dock = DockStyle.Fill, Margin = new Padding(2) };
+
+            var lblSearch = new Label
+            {
+                Text = "Search:",
+                TextAlign = ContentAlignment.MiddleRight,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 0, 2, 0)
+            };
+
+            txtSearch = new TextBox
+            {
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 5, 2, 2)
+            };
+
+            var lblType = new Label
+            {
+                Text = "Type:",
+                TextAlign = ContentAlignment.MiddleRight,
+                Dock = DockStyle.Fill,
+                Margin = new Padding(2, 0, 2, 0)
+            };
+
+            cboTypeFilter = new ComboBox
+            {
+                Dock = DockStyle.Fill,
+                DropDownStyle = ComboBoxStyle.DropDownList,
+                Margin = new Padding(2, 5, 2, 2)
+            };
+
+            chkUdsOnly = new CheckBox { Text = "UDS only", Dock = DockStyle.Fill, Margin = new Padding(8, 6, 2, 2) };
+            chkMatchAllTerms = new CheckBox { Text = "Match all terms", Dock = DockStyle.Fill, Margin = new Padding(8, 6, 2, 2) };
+
+            cboTypeFilter.Items.Add("All");
+            foreach (var v in Enum.GetValues(typeof(LineType)).Cast<LineType>())
+                cboTypeFilter.Items.Add(v.ToString());
+            cboTypeFilter.SelectedItem = "All";
+
+            top.Controls.Add(btnLoadFile, 0, 0);
+            top.Controls.Add(btnLoadSample, 1, 0);
+            top.Controls.Add(btnPaste, 2, 0);
+            top.Controls.Add(btnClear, 3, 0);
+            top.Controls.Add(lblSearch, 4, 0);
+            top.Controls.Add(txtSearch, 5, 0);
+            top.Controls.Add(lblType, 6, 0);
+            top.Controls.Add(cboTypeFilter, 7, 0);
+            top.Controls.Add(chkUdsOnly, 8, 0);
+            top.Controls.Add(chkMatchAllTerms, 9, 0);
+
+            var statusPanel = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false,
+                Margin = new Padding(2, 0, 2, 0)
+            };
+
+            lblStatusTotal = new Label { AutoSize = true, Text = "Total: 0", Padding = new Padding(0, 4, 15, 0) };
+            lblStatusIso = new Label { AutoSize = true, Text = "ISO: 0", Padding = new Padding(0, 4, 15, 0) };
+            lblStatusXml = new Label { AutoSize = true, Text = "XML: 0", Padding = new Padding(0, 4, 15, 0) };
+            lblStatusUnknown = new Label { AutoSize = true, Text = "Unknown: 0", Padding = new Padding(0, 4, 15, 0) };
+
+            statusPanel.Controls.Add(lblStatusTotal);
+            statusPanel.Controls.Add(lblStatusIso);
+            statusPanel.Controls.Add(lblStatusXml);
+            statusPanel.Controls.Add(lblStatusUnknown);
+
+            top.Controls.Add(statusPanel, 0, 1);
+            top.SetColumnSpan(statusPanel, 10);
+
+            decodedRootSplit.Panel1.Controls.Add(top);
+
+            decodedBottomSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal
+            };
+            decodedRootSplit.Panel2.Controls.Add(decodedBottomSplit);
+
+            dgvLines = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false,
+                AutoGenerateColumns = true
+            };
+
+            HookGridBindingOnce();
+
+            decodedBottomSplit.Panel1.Controls.Add(dgvLines);
+
+            rawDecodedSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical
+            };
+            decodedBottomSplit.Panel2.Controls.Add(rawDecodedSplit);
+
+            rtbRaw = new RichTextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
+            rtbDecoded = new RichTextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
+            rawDecodedSplit.Panel1.Controls.Add(rtbRaw);
+            rawDecodedSplit.Panel2.Controls.Add(rtbDecoded);
+
+            dgvLines.DataSource = _filteredLogLines;
+
+            ConfigureDataGridColumns();
+        }
+
+        private void HookGridBindingOnce()
+        {
+            if (_gridBindingHooked) return;
+            _gridBindingHooked = true;
+
+            dgvLines.DataBindingComplete += (s, e) =>
+            {
+                // Always remove these auto-generated columns after any bind/regenerate
+                RemoveColumnIfExists(dgvLines, "Confidence");
+                RemoveColumnIfExists(dgvLines, "CanId");
+
+                // Remove both timestamp columns completely
+                RemoveColumnIfExists(dgvLines, "Timestamp");
+                RemoveColumnIfExists(dgvLines, "TimestampText");
+
+                // Keep CanNode visible
+                if (dgvLines.Columns.Contains("CanNode"))
+                {
+                    var col = dgvLines.Columns["CanNode"];
+                    if (col != null) col.Visible = true;
+                }
+
+                // Widths/headers only (NO DisplayIndex here)
+                ApplyColumnSizing();
+
+                // Safe ordering (sets DisplayIndex sequentially 0..N-1)
+                ApplySafeDisplayOrder();
+            };
+        }
+
+        private void ApplySafeDisplayOrder()
+        {
+            if (dgvLines == null || dgvLines.IsDisposed) return;
+            if (dgvLines.Columns == null || dgvLines.Columns.Count == 0) return;
+
+            // Only reorder columns that actually exist right now
+            string[] desired =
+            {
+                "LineNumber",
+                "Raw",
+                "Type",
+                "Summary",
+                "Details",
+                "CanNode"
+            };
+
+            var cols = desired
+                .Where(n => dgvLines.Columns.Contains(n))
+                .Select(n => dgvLines.Columns[n])
+                .Where(c => c != null)
+                .ToList();
+
+            // Assign DisplayIndex sequentially (0..N-1) (never out of range)
+            for (int i = 0; i < cols.Count; i++)
+                cols[i]!.DisplayIndex = i;
+        }
+
+        private static void RemoveColumnIfExists(DataGridView grid, string columnName)
+        {
+            if (grid?.Columns == null) return;
+            if (grid.Columns.Contains(columnName))
+                grid.Columns.Remove(columnName);
+        }
+
+        private void BuildSummaryTab()
+        {
+            var layout = new TableLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                ColumnCount = 2,
+                RowCount = 2,
+                Padding = new Padding(10)
+            };
+
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+            layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
+
+            layout.RowStyles.Clear();
+            layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
+            layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
+
+            tabSummary.Controls.Clear();
+            tabSummary.Controls.Add(layout);
+
+            var top = new FlowLayoutPanel
+            {
+                Dock = DockStyle.Fill,
+                FlowDirection = FlowDirection.LeftToRight,
+                WrapContents = false
+            };
+
+            lblSummaryIso = new Label { AutoSize = true, Text = "ISO Lines: 0", Padding = new Padding(0, 10, 20, 0) };
+            lblSummaryUds = new Label { AutoSize = true, Text = "UDS Findings: 0", Padding = new Padding(0, 10, 20, 0) };
+            lblSummaryUnknown = new Label { AutoSize = true, Text = "Unknown: 0", Padding = new Padding(0, 10, 20, 0) };
+
+            top.Controls.Add(lblSummaryIso);
+            top.Controls.Add(lblSummaryUds);
+            top.Controls.Add(lblSummaryUnknown);
+
+            layout.Controls.Add(top, 0, 0);
+            layout.SetColumnSpan(top, 2);
+
+            lvNrc = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.Details,
+                FullRowSelect = true,
+                GridLines = true
+            };
+            lvNrc.Columns.Add("NRC", 90);
+            lvNrc.Columns.Add("Meaning", 260);
+            lvNrc.Columns.Add("Count", 80);
+
+            lvDid = new ListView
+            {
+                Dock = DockStyle.Fill,
+                View = View.Details,
+                FullRowSelect = true,
+                GridLines = true
+            };
+            lvDid.Columns.Add("DID", 90);
+            lvDid.Columns.Add("Name", 260);
+            lvDid.Columns.Add("Count", 80);
+
+            var gbNrc = new GroupBox { Text = "NRCs", Dock = DockStyle.Fill };
+            gbNrc.Controls.Add(lvNrc);
+
+            var gbDid = new GroupBox { Text = "DIDs", Dock = DockStyle.Fill };
+            gbDid.Controls.Add(lvDid);
+
+            layout.Controls.Add(gbNrc, 0, 1);
+            layout.Controls.Add(gbDid, 1, 1);
+        }
+
+        private void WireEvents()
+        {
+            btnLoadFile.Click += BtnLoadFile_Click;
+            btnLoadSample.Click += BtnLoadSample_Click;
+            btnPaste.Click += BtnPaste_Click;
+            btnClear.Click += BtnClear_Click;
+
+            dgvLines.RowPrePaint += DgvLines_RowPrePaint;
+            dgvLines.SelectionChanged += DgvLines_SelectionChanged;
+
+            txtSearch.TextChanged += FilterControls_Changed;
+            cboTypeFilter.SelectedIndexChanged += FilterControls_Changed;
+            chkUdsOnly.CheckedChanged += FilterControls_Changed;
+            chkMatchAllTerms.CheckedChanged += FilterControls_Changed;
+
+            lvNrc.ItemActivate += LvNrc_ItemActivate;
+            lvDid.ItemActivate += LvDid_ItemActivate;
+
+            btnAddSession.Click += BtnAddSession_Click;
+            btnCloseSession.Click += BtnCloseSession_Click;
+            lstSessions.SelectedIndexChanged += LstSessions_SelectedIndexChanged;
+        }
+
+        // ================================================================
+        // SESSIONS
+        // ================================================================
+
+        private void CreateNewSession(bool makeActive)
+        {
+            if (_sessions.Count >= MaxSessions)
+            {
+                MessageBox.Show($"Max sessions reached ({MaxSessions}).", "Sessions",
+                    MessageBoxButtons.OK, MessageBoxIcon.Information);
+                return;
+            }
+
+            var s = new LogSession
+            {
+                Name = $"Session {_sessions.Count + 1} - {DateTime.Now:HH:mm:ss}"
+            };
+
+            _sessions.Add(s);
+
+            if (lstSessions.DataSource == null)
+                lstSessions.DataSource = _sessions;
+
+            if (makeActive)
+            {
+                lstSessions.SelectedItem = s;
+                SetActiveSession(s);
+            }
+        }
+
+        private void SetActiveSession(LogSession? session)
+        {
+            _activeSession = session;
+
+            if (_activeSession == null)
+            {
+                _allLogLines = new BindingList<LogLine>();
+                _filteredLogLines = new BindingList<LogLine>();
+                dgvLines.DataSource = _filteredLogLines;
+                UpdateStatusBar();
+                UpdateFindingsSummary();
+                return;
+            }
+
+            _allLogLines = _activeSession.AllLines;
+            _filteredLogLines = _activeSession.FilteredLines;
+
+            dgvLines.DataSource = _filteredLogLines;
+
+            ApplyFilters();
             UpdateStatusBar();
-            // Clear findings summary
             UpdateFindingsSummary();
         }
 
-        // Event handler for Paste button click
-        private void BtnPaste_Click(object? sender, EventArgs e)
+        private void BtnAddSession_Click(object? sender, EventArgs e)
+            => CreateNewSession(makeActive: true);
+
+        private void BtnCloseSession_Click(object? sender, EventArgs e)
         {
-            // Check if clipboard contains text
-            if (!Clipboard.ContainsText())
+            if (_activeSession == null) return;
+
+            int idx = lstSessions.SelectedIndex;
+            var toClose = _activeSession;
+
+            _sessions.Remove(toClose);
+
+            if (_sessions.Count == 0)
             {
-                // Show message if clipboard is empty or doesn't contain text
-                MessageBox.Show("Clipboard does not contain text data.", "Paste Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                CreateNewSession(makeActive: true);
                 return;
             }
 
-            // Try to get text from clipboard
-            try
-            {
-                // Get text from clipboard
-                string clipboardText = Clipboard.GetText();
+            int nextIdx = Math.Min(idx, _sessions.Count - 1);
+            lstSessions.SelectedIndex = nextIdx;
+            SetActiveSession(lstSessions.SelectedItem as LogSession);
+        }
 
-                // Check if text is empty
-                if (string.IsNullOrWhiteSpace(clipboardText))
+        private void LstSessions_SelectedIndexChanged(object? sender, EventArgs e)
+            => SetActiveSession(lstSessions.SelectedItem as LogSession);
+
+        // ================================================================
+        // GRID / FILTERS / DECODING
+        // ================================================================
+
+        private void ConfigureDataGridColumns()
+        {
+            dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+            dgvLines.AllowUserToResizeColumns = true;
+            dgvLines.AllowUserToOrderColumns = true;
+        }
+
+        /// <summary>
+        /// Applies consistent column widths and readable headers after binding.
+        /// IMPORTANT: Does NOT set DisplayIndex (ordering is handled elsewhere).
+        /// </summary>
+        private void ApplyColumnSizing()
+        {
+            if (dgvLines == null || dgvLines.IsDisposed) return;
+            if (dgvLines.Columns == null || dgvLines.Columns.Count == 0) return;
+
+            dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
+
+            void SetCol(string name, int width, string? header = null)
+            {
+                if (!dgvLines.Columns.Contains(name)) return;
+
+                var col = dgvLines.Columns[name];
+                if (col == null) return;
+
+                col.Visible = true;
+                col.Width = width;
+                col.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
+                col.Resizable = DataGridViewTriState.True;
+
+                if (!string.IsNullOrWhiteSpace(header))
+                    col.HeaderText = header;
+            }
+
+            // We removed Timestamp/TimestampText columns earlier; do not size them here.
+            SetCol("LineNumber", 80, "Line");
+            SetCol("Raw", 360, "Raw");
+            SetCol("Type", 95, "Type");
+            SetCol("Summary", 320, "Report Summary");
+            SetCol("Details", 520, "Technical Breakdown");
+            SetCol("CanNode", 170, "Node");
+
+            // Optional: keep Details from wrapping weirdly
+            if (dgvLines.Columns.Contains("Details"))
+            {
+                var c = dgvLines.Columns["Details"];
+                if (c != null) c.DefaultCellStyle.WrapMode = DataGridViewTriState.False;
+            }
+        }
+
+        private void DgvLines_RowPrePaint(object? sender, DataGridViewRowPrePaintEventArgs e)
+        {
+            if (e.RowIndex < 0 || e.RowIndex >= dgvLines.Rows.Count) return;
+
+            var row = dgvLines.Rows[e.RowIndex];
+            var logLine = row.DataBoundItem as LogLine;
+
+            if (logLine == null)
+            {
+                row.DefaultCellStyle.BackColor = Color.White;
+                return;
+            }
+
+            if (logLine.Type == LineType.Iso15765)
+            {
+                if (logLine.Details?.Contains("Negative Response", StringComparison.OrdinalIgnoreCase) == true ||
+                    logLine.Details?.Contains("0x7F", StringComparison.OrdinalIgnoreCase) == true)
                 {
-                    // Show message if clipboard text is empty
-                    MessageBox.Show("Clipboard text is empty.", "Paste Error", MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                    row.DefaultCellStyle.BackColor = Color.LightSalmon;
                     return;
                 }
 
-                // Split clipboard text into lines (handle both Windows and Unix line endings)
-                string[] lines = clipboardText.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+                if (logLine.Details?.Contains("UDS Request", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    row.DefaultCellStyle.BackColor = Color.LightSkyBlue;
+                    return;
+                }
 
-                // Load the lines into the application
-                LoadLines(lines);
+                if (logLine.Details?.Contains("UDS Positive Response", StringComparison.OrdinalIgnoreCase) == true ||
+                    logLine.Details?.Contains("(0x62)", StringComparison.OrdinalIgnoreCase) == true)
+                {
+                    row.DefaultCellStyle.BackColor = Color.LightGreen;
+                    return;
+                }
             }
-            // Catch any exceptions during clipboard access
+
+            row.DefaultCellStyle.BackColor = Color.White;
+        }
+
+        private void BtnLoadFile_Click(object? sender, EventArgs e)
+        {
+            using var ofd = new OpenFileDialog
+            {
+                Title = "Select Log File",
+                Filter = "Text Files (*.txt)|*.txt|Log Files (*.log)|*.log|All Files (*.*)|*.*"
+            };
+
+            if (ofd.ShowDialog() != DialogResult.OK) return;
+
+            try
+            {
+                var lines = File.ReadAllLines(ofd.FileName);
+                string fileName = Path.GetFileName(ofd.FileName);
+                LoadLines(lines, sessionName: fileName);
+            }
             catch (Exception ex)
             {
-                // Show error message to user without crashing
-                MessageBox.Show($"Error pasting from clipboard: {ex.Message}", "Paste Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Error loading file: {ex.Message}", "Load Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        // Event handler for DataGridView selection change
+        private void BtnLoadSample_Click(object? sender, EventArgs e)
+        {
+            string[] sampleLines =
+            {
+                "2025-10-21T10:23:45.123 ISO15765 RX <- [00,00,07,D8,7F,22,78]",
+                "2025-10-21T10:23:45.200 ISO15765 TX -> [00,00,07,D0,62,80,6A,41,42,43,44]",
+                "2025-10-21T10:23:47.000 ISO15765 TX -> [00,00,07,D0,22,F1,88]",
+                "2025-10-21T10:23:47.100 ISO15765 RX <- [00,00,07,D8,62,F1,88,56,45,52,53,49,4F,4E,31]",
+                "DEBUG: Starting diagnostic session",
+                "<ns3:didValue didValue=\"F188\" type=\"Strategy\"><ns3:Response>4D59535452415445475931</ns3:Response></ns3:didValue>",
+            };
+
+            LoadLines(sampleLines, sessionName: "Sample");
+        }
+
+        private void BtnClear_Click(object? sender, EventArgs e)
+        {
+            _allLogLines.Clear();
+            _filteredLogLines.Clear();
+            rtbRaw.Clear();
+            rtbDecoded.Clear();
+            UpdateStatusBar();
+            UpdateFindingsSummary();
+        }
+
+        private void BtnPaste_Click(object? sender, EventArgs e)
+        {
+            if (!Clipboard.ContainsText())
+            {
+                MessageBox.Show("Clipboard does not contain text.", "Paste",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var text = Clipboard.GetText();
+            if (string.IsNullOrWhiteSpace(text))
+            {
+                MessageBox.Show("Clipboard text is empty.", "Paste",
+                    MessageBoxButtons.OK, MessageBoxIcon.Warning);
+                return;
+            }
+
+            var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
+            LoadLines(lines, sessionName: "Pasted");
+        }
+
         private void DgvLines_SelectionChanged(object? sender, EventArgs e)
         {
-            // Check if any rows are selected
-            if (dgvLines.SelectedRows.Count > 0)
-            {
-                // Get the first selected row
-                DataGridViewRow selectedRow = dgvLines.SelectedRows[0];
-                // Get the LogLine object from the row
-                LogLine? logLine = selectedRow.DataBoundItem as LogLine;
+            if (dgvLines.SelectedRows.Count <= 0) return;
 
-                // Check if we got a valid LogLine object
-                if (logLine != null)
-                {
-                    // Display raw line text in left textbox
-                    rtbRaw.Text = logLine.Raw ?? string.Empty;
-                    // Display decoded details in right textbox
-                    rtbDecoded.Text = logLine.Details ?? string.Empty;
-                }
-            }
+            var row = dgvLines.SelectedRows[0];
+            if (row.DataBoundItem is not LogLine logLine) return;
+
+            rtbRaw.Text = logLine.Raw ?? string.Empty;
+            rtbDecoded.Text = logLine.Details ?? string.Empty;
         }
 
-        // Event handler for filter controls (search, type, UDS checkbox)
-        private void FilterControls_Changed(object? sender, EventArgs e)
-        {
-            // Apply filters to update the displayed lines
-            ApplyFilters();
-        }
+        private void FilterControls_Changed(object? sender, EventArgs e) => ApplyFilters();
 
-        // Helper method to tokenize search input, respecting quoted phrases
         private static List<string> TokenizeSearch(string input)
         {
-            // List to hold parsed tokens
-            List<string> tokens = new List<string>();
+            var tokens = new List<string>();
+            if (string.IsNullOrWhiteSpace(input)) return tokens;
 
-            // Return empty list if input is null or whitespace
-            if (string.IsNullOrWhiteSpace(input))
-            {
-                return tokens;
-            }
-
-            // Track if we're inside quotes
             bool inQuotes = false;
-            // Build current token
-            System.Text.StringBuilder currentToken = new System.Text.StringBuilder();
+            var current = new System.Text.StringBuilder();
 
-            // Iterate through each character
-            for (int i = 0; i < input.Length; i++)
+            foreach (char c in input)
             {
-                char c = input[i];
+                if (c == '"') { inQuotes = !inQuotes; continue; }
 
-                if (c == '"')
+                if (c == ' ' && !inQuotes)
                 {
-                    // Toggle quote state
-                    inQuotes = !inQuotes;
-                }
-                else if (c == ' ' && !inQuotes)
-                {
-                    // Space outside quotes - end current token
-                    if (currentToken.Length > 0)
+                    if (current.Length > 0)
                     {
-                        // Add trimmed token to list
-                        tokens.Add(currentToken.ToString().Trim());
-                        // Reset for next token
-                        currentToken.Clear();
+                        tokens.Add(current.ToString().Trim());
+                        current.Clear();
                     }
                 }
                 else
                 {
-                    // Regular character - add to current token
-                    currentToken.Append(c);
+                    current.Append(c);
                 }
             }
 
-            // Add final token if any
-            if (currentToken.Length > 0)
-            {
-                tokens.Add(currentToken.ToString().Trim());
-            }
-
-            // Remove empty tokens
-            tokens = tokens.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
-
-            return tokens;
+            if (current.Length > 0) tokens.Add(current.ToString().Trim());
+            return tokens.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
         }
 
-        // Helper method to load lines into the application (improved with stats)
-        private void LoadLines(string[] lines)
+        private void LoadLines(string[] lines, string? sessionName = null)
         {
-            // Try to process all lines
+            if (_activeSession == null)
+                CreateNewSession(makeActive: true);
+
+            if (_activeSession != null && !string.IsNullOrWhiteSpace(sessionName))
+            {
+                _activeSession.Name = sessionName;
+                RefreshSessionListUi();
+            }
+
             try
             {
-                // Clear existing master log lines
                 _allLogLines.Clear();
-                // Clear filtered log lines
                 _filteredLogLines.Clear();
 
-                // Iterate through each line with index
                 for (int i = 0; i < lines.Length; i++)
                 {
-                    // Get the current line
                     string rawLine = lines[i];
-                    // Calculate line number (1-based)
                     int lineNumber = i + 1;
 
-                    // Try to classify and decode the line
                     try
                     {
-                        // Classify the raw line into appropriate LogLine type
-                        LogLine logLine = LineClassifier.Classify(lineNumber, rawLine);
-                        // Parse and decode the line
+                        var logLine = LineClassifier.Classify(lineNumber, rawLine);
                         logLine.ParseAndDecode();
-                        // Add the decoded line to the master list
                         _allLogLines.Add(logLine);
                     }
-                    // Catch any exceptions during line processing
                     catch (Exception ex)
                     {
-                        // Create UnknownLine for failed lines to avoid crashes
-                        LogLine errorLine = new UnknownLine(lineNumber, rawLine, $"Error: {ex.Message}");
-                        // Parse the error line
+                        var errorLine = new UnknownLine(lineNumber, rawLine, $"Error: {ex.Message}");
                         errorLine.ParseAndDecode();
-                        // Add the error line to the master list
                         _allLogLines.Add(errorLine);
                     }
                 }
 
-                // Apply filters to populate the filtered list
                 ApplyFilters();
-                // Update status bar with statistics
-                UpdateStatusBar();
-                // Build and display findings summary
-                UpdateFindingsSummary();
 
-                // Show success message with line count
-                MessageBox.Show($"Successfully loaded {_allLogLines.Count} lines.", "Load Complete", MessageBoxButtons.OK, MessageBoxIcon.Information);
+                _pdus = IsoTpReassembler.Build(_allLogLines);
+                _transactions = UdsConversationBuilder.Build(_pdus);
+
+                UpdateStatusBar();
+                UpdateFindingsSummary();
             }
-            // Catch any exceptions during overall loading
             catch (Exception ex)
             {
-                // Show error message without crashing
-                MessageBox.Show($"Error loading lines: {ex.Message}", "Load Error", MessageBoxButtons.OK, MessageBoxIcon.Error);
+                MessageBox.Show($"Error loading lines: {ex.Message}", "Load Error",
+                    MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
         }
 
-        // Helper method to apply filters and update the filtered list
         private void ApplyFilters()
         {
-            // Get search text from textbox (trim)
             string searchText = (txtSearch.Text ?? string.Empty).Trim();
-            // Tokenize search text into keywords and phrases
-            List<string> searchTokens = TokenizeSearch(searchText);
-            // Get match all terms checkbox state (AND vs OR)
-            bool matchAllTerms = chkMatchAllTerms.Checked;
-            // Get selected type filter from combo box
+            var tokens = TokenizeSearch(searchText);
+            bool matchAll = chkMatchAllTerms.Checked;
+
             string typeFilter = cboTypeFilter.SelectedItem?.ToString() ?? "All";
-            // Get UDS only checkbox state
             bool udsOnly = chkUdsOnly.Checked;
 
-            // Clear the filtered list (preparing to rebuild)
             _filteredLogLines.Clear();
 
-            // Iterate through all master log lines
-            foreach (LogLine logLine in _allLogLines)
+            foreach (var logLine in _allLogLines)
             {
-                // Build combined search field (Raw + Report Summary + Technical Breakdown)
-                string combinedField = (logLine.Raw ?? string.Empty) + " " +
-                                      (logLine.Summary ?? string.Empty) + " " +
-                                      (logLine.Details ?? string.Empty);
-                // Convert to lowercase for case-insensitive search
-                string searchField = combinedField.ToLower();
+                string combined =
+                    (logLine.Raw ?? "") + " " +
+                    (logLine.Summary ?? "") + " " +
+                    (logLine.Details ?? "");
 
-                // Check search text filter with multi-keyword support
+                string field = NormalizeForSearch(combined);
+
                 bool matchesSearch = true;
-                if (searchTokens.Count > 0)
+                if (tokens.Count > 0)
                 {
-                    if (matchAllTerms)
-                    {
-                        // AND logic - all tokens must be present
-                        matchesSearch = searchTokens.All(token => 
-                            searchField.Contains(token.ToLower(), StringComparison.OrdinalIgnoreCase));
-                    }
-                    else
-                    {
-                        // OR logic - any token present
-                        matchesSearch = searchTokens.Any(token => 
-                            searchField.Contains(token.ToLower(), StringComparison.OrdinalIgnoreCase));
-                    }
+                    matchesSearch = matchAll
+                        ? tokens.All(t => field.Contains(NormalizeForSearch(t)))
+                        : tokens.Any(t => field.Contains(NormalizeForSearch(t)));
                 }
 
-                // Check type filter
                 bool matchesType = typeFilter == "All" || logLine.Type.ToString() == typeFilter;
 
-                // Check UDS only filter (Details contains "UDS")
-                bool matchesUds = !udsOnly || (logLine.Details?.Contains("UDS", StringComparison.OrdinalIgnoreCase) == true);
+                bool matchesUds =
+                    !udsOnly ||
+                    (logLine.Details?.Contains("UDS", StringComparison.OrdinalIgnoreCase) == true);
 
-                // Add to filtered list if all filters match
                 if (matchesSearch && matchesType && matchesUds)
-                {
-                    // Add line to filtered list
                     _filteredLogLines.Add(logLine);
-                }
             }
 
-            // Update findings summary based on filtered lines
             UpdateFindingsSummary();
         }
 
-        // Helper method to update status bar with statistics
         private void UpdateStatusBar()
         {
-            // Count total lines from master list
-            int totalLines = _allLogLines.Count;
-            // Count ISO15765 lines
-            int isoLines = _allLogLines.Count(line => line.Type == LineType.Iso15765);
-            // Count XML lines
-            int xmlLines = _allLogLines.Count(line => line.Type == LineType.Xml);
-            // Count Unknown lines
-            int unknownLines = _allLogLines.Count(line => line.Type == LineType.Unknown);
+            int total = _allLogLines.Count;
+            int iso = _allLogLines.Count(l => l.Type == LineType.Iso15765);
+            int xml = _allLogLines.Count(l => l.Type == LineType.Xml);
+            int unk = _allLogLines.Count(l => l.Type == LineType.Unknown);
 
-            // Update status bar labels with counts
-            lblStatusTotal.Text = $"Total: {totalLines}";
-            // Update ISO count
-            lblStatusIso.Text = $"ISO: {isoLines}";
-            // Update XML count
-            lblStatusXml.Text = $"XML: {xmlLines}";
-            // Update Unknown count
-            lblStatusUnknown.Text = $"Unknown: {unknownLines}";
+            lblStatusTotal.Text = $"Total: {total}";
+            lblStatusIso.Text = $"ISO: {iso}";
+            lblStatusXml.Text = $"XML: {xml}";
+            lblStatusUnknown.Text = $"Unknown: {unk}";
         }
 
-        // Build and display findings summary in the Summary tab
         private void UpdateFindingsSummary()
         {
-            // Build aggregated findings from filtered lines
-            FindingsSummary summary = FindingsAggregator.Build(_filteredLogLines);
+            var summary = FindingsAggregator.Build(_filteredLogLines);
 
-            // Update summary totals labels
             lblSummaryIso.Text = $"ISO Lines: {summary.IsoLines}";
-            // Update UDS findings count
             lblSummaryUds.Text = $"UDS Findings: {summary.UdsFindingLines}";
-            // Update unknown lines count
             lblSummaryUnknown.Text = $"Unknown: {summary.UnknownLines}";
 
-            // Populate NRC ListView
             PopulateNrcListView(summary.NrcCounts);
-
-            // Populate DID ListView
             PopulateDidListView(summary.DidCounts);
+
+            lblSummaryUds.Text += $" | Conversations: {_transactions?.Count ?? 0}";
         }
 
-        // Populate the NRC ListView with aggregated NRC counts
         private void PopulateNrcListView(Dictionary<byte, int> nrcCounts)
         {
-            // Clear existing items
+            lvNrc.BeginUpdate();
             lvNrc.Items.Clear();
 
-            // Sort NRC codes by count (descending) then by NRC value (ascending)
-            var sortedNrcs = nrcCounts.OrderByDescending(kvp => kvp.Value).ThenBy(kvp => kvp.Key);
-
-            // Add each NRC to the ListView
-            foreach (var kvp in sortedNrcs)
+            foreach (var kvp in nrcCounts.OrderByDescending(k => k.Value).ThenBy(k => k.Key))
             {
-                // Get NRC code
-                byte nrcCode = kvp.Key;
-                // Get occurrence count
+                byte nrc = kvp.Key;
                 int count = kvp.Value;
 
-                // Look up NRC meaning from decode table (deterministic)
-                string nrcMeaning = DecodeTables.UdsNrcNames.TryGetValue(nrcCode, out var meaning)
-                    ? meaning
-                    : "Unknown";
+                string meaning =
+                    UdsTables.NrcMeaning.TryGetValue(nrc, out var m)
+                        ? m
+                        : "UnknownNRC";
 
-                // Create ListView item with NRC hex value
-                ListViewItem item = new ListViewItem($"0x{nrcCode:X2}");
-                // Add NRC meaning as subitem
-                item.SubItems.Add(nrcMeaning);
-                // Add count as subitem
+                var item = new ListViewItem($"0x{nrc:X2}");
+                item.SubItems.Add(meaning);
                 item.SubItems.Add(count.ToString());
-                // Store NRC code in Tag for filtering
-                item.Tag = nrcCode;
-                // Add item to ListView
+                item.Tag = nrc;
                 lvNrc.Items.Add(item);
             }
+
+            lvNrc.EndUpdate();
         }
 
-        // Populate the DID ListView with aggregated DID counts
         private void PopulateDidListView(Dictionary<ushort, int> didCounts)
         {
-            // Clear existing items
+            lvDid.BeginUpdate();
             lvDid.Items.Clear();
 
-            // Sort DIDs by count (descending) then by DID value (ascending)
-            var sortedDids = didCounts.OrderByDescending(kvp => kvp.Value).ThenBy(kvp => kvp.Key);
-
-            // Add each DID to the ListView
-            foreach (var kvp in sortedDids)
+            foreach (var kvp in didCounts.OrderByDescending(k => k.Value).ThenBy(k => k.Key))
             {
-                // Get DID value
-                ushort didValue = kvp.Key;
-                // Get occurrence count
+                ushort did = kvp.Key;
                 int count = kvp.Value;
 
-                // Look up DID name from decode table (deterministic)
-                string didName = DecodeTables.KnownDids.TryGetValue(didValue, out var name)
-                    ? name
-                    : "Unknown";
+                string name = UdsTables.DescribeDid(did);
 
-                // Create ListView item with DID hex value
-                ListViewItem item = new ListViewItem($"0x{didValue:X4}");
-                // Add DID name as subitem
-                item.SubItems.Add(didName);
-                // Add count as subitem
+                var item = new ListViewItem($"0x{did:X4}");
+                item.SubItems.Add(name);
                 item.SubItems.Add(count.ToString());
-                // Store DID value in Tag for filtering
-                item.Tag = didValue;
-                // Add item to ListView
+                item.Tag = did;
+
                 lvDid.Items.Add(item);
             }
+
+            lvDid.EndUpdate();
         }
 
-        // Event handler for clicking an NRC item (double-click or enter)
         private void LvNrc_ItemActivate(object? sender, EventArgs e)
         {
-            // Check if any items are selected
-            if (lvNrc.SelectedItems.Count > 0)
-            {
-                // Get the first selected item
-                ListViewItem selectedItem = lvNrc.SelectedItems[0];
-                // Get the NRC code from the Tag
-                byte nrcCode = (byte)(selectedItem.Tag ?? (byte)0);
+            if (lvNrc.SelectedItems.Count <= 0) return;
 
-                // Set search filter to NRC hex value (e.g., "0x78")
-                txtSearch.Text = $"0x{nrcCode:X2}";
-                // Switch to Decoded tab to show filtered results
-                tabControl.SelectedTab = tabDecoded;
-            }
+            byte nrc = (byte)(lvNrc.SelectedItems[0].Tag ?? (byte)0);
+            txtSearch.Text = $"0x{nrc:X2}";
+            tabControl.SelectedTab = tabDecoded;
         }
 
-        // Event handler for clicking a DID item (double-click or enter)
         private void LvDid_ItemActivate(object? sender, EventArgs e)
         {
-            // Check if any items are selected
-            if (lvDid.SelectedItems.Count > 0)
-            {
-                // Get the first selected item
-                ListViewItem selectedItem = lvDid.SelectedItems[0];
-                // Get the DID value from the Tag
-                ushort didValue = (ushort)(selectedItem.Tag ?? (ushort)0);
+            if (lvDid.SelectedItems.Count <= 0) return;
 
-                // Set search filter to DID hex value (e.g., "0xF188")
-                txtSearch.Text = $"0x{didValue:X4}";
-                // Switch to Decoded tab to show filtered results
-                tabControl.SelectedTab = tabDecoded;
+            ushort did = (ushort)(lvDid.SelectedItems[0].Tag ?? (ushort)0);
+            txtSearch.Text = $"0x{did:X4}";
+            tabControl.SelectedTab = tabDecoded;
+        }
+
+        // ================================================================
+        // SPLITTER SAFETY
+        // ================================================================
+
+        private static bool TryClampSplitter(SplitContainer s)
+        {
+            if (s == null || s.IsDisposed) return false;
+
+            int size = (s.Orientation == Orientation.Vertical) ? s.Width : s.Height;
+            if (size <= 0) return false;
+
+            int min = s.Panel1MinSize;
+            int max = size - s.SplitterWidth - s.Panel2MinSize;
+            if (max < min) return false;
+
+            int desired = s.SplitterDistance;
+            int clamped = Math.Max(min, Math.Min(desired, max));
+
+            if (clamped != desired)
+                s.SplitterDistance = clamped;
+
+            return true;
+        }
+
+        protected override void OnShown(EventArgs e)
+        {
+            base.OnShown(e);
+
+            BeginInvoke(new Action(() =>
+            {
+                splitMain.Panel1MinSize = 120;
+                splitMain.Panel2MinSize = 500;
+
+                decodedRootSplit.Panel1MinSize = 70;
+                decodedRootSplit.Panel2MinSize = 500;
+
+                decodedBottomSplit.Panel1MinSize = 250;
+                decodedBottomSplit.Panel2MinSize = 200;
+
+                rawDecodedSplit.Panel1MinSize = 200;
+                rawDecodedSplit.Panel2MinSize = 200;
+
+                splitMain.SplitterDistance = 140;
+                decodedRootSplit.SplitterDistance = 60;
+                decodedBottomSplit.SplitterDistance = 360;
+                rawDecodedSplit.SplitterDistance = Math.Max(200, rawDecodedSplit.Width / 2);
+
+                splitMain.FixedPanel = FixedPanel.Panel1;
+
+                TryClampSplitter(splitMain);
+                TryClampSplitter(decodedRootSplit);
+                TryClampSplitter(decodedBottomSplit);
+                TryClampSplitter(rawDecodedSplit);
+            }));
+        }
+
+        protected override void OnResize(EventArgs e)
+        {
+            base.OnResize(e);
+
+            if (splitMain != null) TryClampSplitter(splitMain);
+            if (decodedRootSplit != null) TryClampSplitter(decodedRootSplit);
+            if (decodedBottomSplit != null) TryClampSplitter(decodedBottomSplit);
+            if (rawDecodedSplit != null) TryClampSplitter(rawDecodedSplit);
+        }
+
+        // ================================================================
+        // SEARCH NORMALIZATION + SESSION UI REFRESH
+        // ================================================================
+
+        private static string NormalizeForSearch(string s)
+        {
+            if (string.IsNullOrEmpty(s)) return string.Empty;
+
+            var chars = s.ToLowerInvariant().ToCharArray();
+
+            for (int i = 0; i < chars.Length; i++)
+            {
+                char c = chars[i];
+                if (c is ',' or '[' or ']' or '(' or ')' or '{' or '}' or ':' or ';' or '\t')
+                    chars[i] = ' ';
             }
+
+            return string.Join(" ", new string(chars)
+                .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
+        }
+
+        private void RefreshSessionListUi()
+        {
+            if (lstSessions == null) return;
+            if (lstSessions.DataSource == null) return;
+
+            if (BindingContext != null)
+            {
+                if (BindingContext[lstSessions.DataSource] is CurrencyManager cm)
+                    cm.Refresh();
+            }
+
+            lstSessions.Invalidate();
+            lstSessions.Update();
         }
     }
 }
