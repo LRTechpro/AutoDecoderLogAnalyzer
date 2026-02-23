@@ -1,140 +1,260 @@
-# AutoDecoder - Log Line Decoder
 
-A comprehensive C# WinForms application demonstrating Object-Oriented Programming principles including inheritance, encapsulation, and polymorphism through automatic decoding of automotive diagnostic log files.
 
-## Project Structure
+# AutoDecoder – Automotive Log Line Decoder
 
-### 1. AutoDecoder.Models (Class Library)
-Contains the core OOP architecture with abstract base class and derived types.
+AutoDecoder is a C# WinForms application designed to decode, classify, and analyze automotive diagnostic log files using Object-Oriented Programming principles and layered architecture.
 
-**Files:**
-- `LineType.cs` - Enumeration of supported line types (Iso15765, Xml, Hex, Ascii, Unknown)
-- `LogLine.cs` - Abstract base class demonstrating inheritance and encapsulation
-- `Iso15765Line.cs` - Derived class for ISO 15765 CAN diagnostic protocol lines
-- `XmlLine.cs` - Derived class for XML formatted lines with DID information
-- `HexLine.cs` - Derived class for raw hexadecimal data
-- `AsciiLine.cs` - Derived class for plain ASCII text
-- `UnknownLine.cs` - Derived class for unrecognized formats
+This tool demonstrates protocol decoding (UDS / ISO-TP), structured parsing, inheritance-based modeling, and stable UI rendering for large diagnostic datasets.
 
-**OOP Concepts Demonstrated:**
-- **Inheritance**: All line types inherit from abstract `LogLine` base class
-- **Encapsulation**: Private fields (`_raw`, `_lineNumber`) with public read-only properties
-- **Polymorphism**: Abstract `ParseAndDecode()` method implemented differently by each derived class
-- **Abstraction**: Abstract `Type` property forces derived classes to specify their type
+---
 
-### 2. AutoDecoder.Decoders (Class Library)
-Contains deterministic decoding logic and helper utilities.
+## Overview
 
-**Files:**
-- `DecodeResult.cs` - Data class for decode results (Summary, Details, Confidence)
-- `HexTools.cs` - Static helper methods for parsing hex data
-- `DecodeTables.cs` - Static lookup tables for UDS services, NRCs, and DIDs
-- `UdsDecoder.cs` - Decodes Unified Diagnostic Services (UDS) protocol messages
-- `Iso15765Decoder.cs` - Decodes ISO 15765 CAN diagnostic protocol
-- `XmlDidDecoder.cs` - Extracts and decodes DID information from XML
-- `LineClassifier.cs` - Classifies raw lines into appropriate LogLine types
+Modern automotive diagnostic logs may contain:
 
-**Supported Patterns:**
+- ISO 15765 (CAN transport protocol)
+- UDS (Unified Diagnostic Services – ISO 14229)
+- XML DID responses
+- Raw hex payloads
+- ASCII debug output
+- Negative Response Codes (NRCs)
 
-#### A) ISO 15765 Lines
+AutoDecoder processes each line into structured objects and provides:
+
+- Line-by-line decoding
+- Protocol classification
+- ISO-TP message reconstruction
+- UDS request/response interpretation
+- Summary statistics (NRC / DID counts)
+- Stable DataGridView rendering with safe column ordering
+
+---
+
+## Architecture
+
 ```
-ISO15765 TX -> ... [00,00,07,D0,22,80,6A]
-ISO15765 RX <- ... [00,00,07,D8,7F,22,78]
+
+AutoDecoder.Gui        → WinForms UI (Presentation Layer)
+AutoDecoder.Models     → Domain models (OOP core)
+AutoDecoder.Protocols  → Protocol parsing and decoding logic
+
 ```
-- Extracts direction (TX/RX) and payload bytes
-- Decodes UDS messages within payload
-- Handles negative responses (0x7F) and positive responses (0x62)
 
-#### B) UDS Protocol
-- **Negative Response (0x7F)**: `0x7F <ServiceID> <NRC>`
-  - Example: `7F 22 78` = Negative Response to ReadDataByIdentifier, Response Pending
-- **Positive Response (0x62)**: `0x62 <DID_Hi> <DID_Lo> <Data...>`
-  - Example: `62 F1 88 ...` = Positive Response, DID 0xF188 (Strategy)
+### AutoDecoder.Models
 
-#### C) XML Lines
+Contains the core OOP architecture.
+
+**Key Concepts Demonstrated:**
+
+- Inheritance (abstract base class `LogLine`)
+- Encapsulation (private backing fields with read-only accessors)
+- Polymorphism (`ParseAndDecode()` overridden per derived type)
+- Abstraction (abstract `Type` property)
+
+**Derived Types:**
+
+- Iso15765Line
+- XmlLine
+- HexLine
+- AsciiLine
+- UnknownLine
+
+Each log entry becomes a strongly typed object.
+
+---
+
+### AutoDecoder.Protocols
+
+Contains deterministic decoding logic.
+
+**Components:**
+
+- LineClassifier
+- Iso15765Decoder
+- UdsDecoder
+- XmlDidDecoder
+- HexTools
+- DecodeTables
+
+#### Supported Protocol Patterns
+
+**ISO15765 Example**
+```
+
+ISO15765 TX -> [00,00,07,D0,22,80,6A]
+ISO15765 RX <- [00,00,07,D8,7F,22,78]
+
+```
+
+**UDS Negative Response**
+```
+
+7F 22 78
+
+```
+→ Negative Response to ReadDataByIdentifier  
+→ NRC 0x78 (Response Pending)
+
+**UDS Positive Response**
+```
+
+62 F1 88 ...
+
+````
+→ Positive Response  
+→ DID 0xF188 (Strategy)
+
+**XML DID Example**
 ```xml
 <ns3:didValue didValue="F188"><ns3:Response>4D59...</ns3:Response></ns3:didValue>
-```
-- Extracts DID values and response data
-- Identifies known DIDs (F188, F110, F111, F113, F124, DE00)
+````
 
-#### D) Hex Lines
+**Hex Example**
+
 ```
 [48,65,6C,6C,6F]
 DEADBEEF01234567
 ```
-- Parses bracket notation or continuous hex strings
-- Provides ASCII preview
 
-#### E) ASCII Lines
-Plain text entries with high percentage of printable characters
+---
 
-### 3. AutoDecoder.Gui (WinForms Application)
-User interface for loading and viewing decoded log files.
+### AutoDecoder.Gui
 
-**Features:**
-- **Load File**: Open and decode any text/log file
-- **Load Sample**: Load 50+ pre-configured sample lines demonstrating all formats
-- **Clear**: Reset all data
-- **DataGridView**: Displays all decoded lines with columns for each property
-- **Split View**: Raw line (left) and decoded details (right)
+WinForms interface with:
 
-**Error Handling:**
-- All file operations wrapped in try-catch blocks
-- Failed line decoding creates UnknownLine objects instead of crashing
-- User-friendly MessageBox alerts for errors
+* Load File
+* Load Sample
+* Paste Log
+* Clear
+* Filter by type
+* UDS-only filter
+* Search with token support
+* Raw vs Decoded split view
+* Multi-session support (MaxSessions = 5)
 
-## Usage
+Safe grid logic includes:
 
-1. **Build and Run**: Open the solution in Visual Studio and run (F5)
-2. **Load Sample**: Click "Load Sample" to see 50+ demonstration lines
-3. **Load File**: Click "Load File" to open your own log file
-4. **View Details**: Click any row in the grid to see raw and decoded views
+* Timestamp columns removed
+* Sequential DisplayIndex ordering
+* Post-binding column sizing
+* Splitter distance clamping
+* Null-safe rendering
 
-## OOP Requirements Met
+---
 
-✅ **10+ Objects**: Each log line becomes an object; sample includes 50+ lines  
-✅ **Inheritance**: Abstract `LogLine` base class with 5 derived types  
-✅ **Encapsulation**: Private fields with public read-only properties  
-✅ **Line-by-Line Comments**: Every line has a comment explaining its purpose  
-✅ **Error Handling**: No crashes on bad input; all exceptions caught and displayed  
+## Screenshots
+
+### Main Decoded View
+
+<p align="center">
+  <img src="docs/screenshots/AutoDecoderLogAnalyzer_1.png" width="900"/>
+</p>
+
+---
+
+### Raw vs Decoded Split
+
+<p align="center">
+  <img src="docs/screenshots/AutoDecoderLogAnalyzer_2.png" width="900"/>
+</p>
+
+---
+
+### Summary View (NRC / DID)
+
+<p align="center">
+  <img src="docs/screenshots/AutoDecoderLogAnalyzer_3.png" width="900"/>
+</p>
+
+---
 
 ## Supported UDS Services
-- 0x10 DiagnosticSessionControl
-- 0x11 ECUReset
-- 0x22 ReadDataByIdentifier
-- 0x27 SecurityAccess
-- 0x2E WriteDataByIdentifier
-- 0x31 RoutineControl
-- 0x3E TesterPresent
-- 0x7F NegativeResponse
 
-## Supported NRCs (Negative Response Codes)
-- 0x10 GeneralReject
-- 0x11 ServiceNotSupported
-- 0x12 SubFunctionNotSupported
-- 0x13 IncorrectMessageLengthOrInvalidFormat
-- 0x22 ConditionsNotCorrect
-- 0x31 RequestOutOfRange
-- 0x33 SecurityAccessDenied
-- 0x35 InvalidKey
-- 0x36 ExceededNumberOfAttempts
-- 0x37 RequiredTimeDelayNotExpired
-- 0x78 ResponsePending (most common)
+* 0x10 DiagnosticSessionControl
+* 0x11 ECUReset
+* 0x22 ReadDataByIdentifier
+* 0x27 SecurityAccess
+* 0x2E WriteDataByIdentifier
+* 0x31 RoutineControl
+* 0x3E TesterPresent
+* 0x7F NegativeResponse
 
-## Supported DIDs (Data Identifiers)
-- 0xF188 Strategy
-- 0xF110 PartII_Spec
-- 0xF111 CoreAssembly
-- 0xF113 Assembly
-- 0xF124 Calibration
-- 0xDE00 DirectConfiguration
+---
+
+## Supported NRCs
+
+* 0x10 GeneralReject
+* 0x11 ServiceNotSupported
+* 0x13 IncorrectMessageLength
+* 0x22 ConditionsNotCorrect
+* 0x31 RequestOutOfRange
+* 0x33 SecurityAccessDenied
+* 0x35 InvalidKey
+* 0x36 ExceededAttempts
+* 0x37 RequiredTimeDelayNotExpired
+* 0x78 ResponsePending
+
+---
+
+## Supported DIDs
+
+* 0xF188 Strategy
+* 0xF110 PartII_Spec
+* 0xF111 CoreAssembly
+* 0xF113 Assembly
+* 0xF124 Calibration
+* 0xDE00 DirectConfiguration
+
+---
 
 ## Technical Details
 
-**Target Framework**: .NET 10.0  
-**Language**: C# with nullable reference types enabled  
-**Architecture**: 3-tier (Models, Business Logic/Decoders, Presentation/GUI)  
-**Project References**:
-- Gui → Models + Decoders
-- Decoders → Models
+Target Framework: .NET 10.0
+Language: C# (nullable enabled)
+Architecture: 3-tier separation (Models / Protocols / GUI)
+Design Pattern: Layered architecture with protocol abstraction
+
+---
+
+## OOP Requirements Demonstrated
+
+✔ 10+ objects instantiated during runtime
+✔ Abstract base class with derived implementations
+✔ Encapsulation of raw log data
+✔ Polymorphic decoding behavior
+✔ Structured exception handling
+✔ Deterministic decoding logic
+
+---
+
+## Version
+
+Current Version: v0.4.0
+Status: Active Development
+
+---
+
+## Roadmap
+
+* CAN ID flow tracking
+* UDS conversation grouping
+* NRC highlighting
+* Exportable findings report
+* Large log performance optimization
+* DoIP support
+
+---
+
+## Engineering Direction
+
+This project is evolving toward:
+
+* Automotive cybersecurity log triage
+* ECU communication flow analysis
+* OTA update log interpretation
+* Reverse engineering support tooling
+* Secure vehicle diagnostics analysis
+
+
+
+
