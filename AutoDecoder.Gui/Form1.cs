@@ -2,146 +2,156 @@
 // File: Form1.cs
 // Project: AutoDecoder.Gui
 // Course: MS539 Programming Concepts (Graduate)
-// Assignment: OOP classes/objects/inheritance/encapsulation + GUI
+// Assignment: 5.1 (OOP: classes/objects/inheritance/encapsulation + GUI)
 // Author: Harold Watkins
 //
-// PURPOSE (plain English):
-// - Provide a WinForms “workbench” that can load automotive logs (file/paste/sample),
-//   classify each line into a strongly-typed object (inheritance),
-//   decode protocol details (UDS/ISO-TP),
-//   filter/search lines,
-//   and summarize findings (NRC/DID counts + reconstructed conversations).
+// HOW TO READ THIS FILE (5th-grade friendly):
+// - Think of this app like a “log detective notebook”.
+// - A “log file” is a long list of sentences a car/computer wrote down.
+// - This window lets you:
+//   1) load those sentences,
+//   2) put each sentence into the right “bucket” (type),
+//   3) show them in a table,
+//   4) let you search/filter,
+//   5) show a simple summary of what was found.
 //
-// NOTE ABOUT “OVER-COMMENTING”:
-// - This version is intentionally verbose to satisfy grading rubrics.
-// - Many comments restate what the code does in “human” language.
+// HOW THIS MATCHES ASSIGNMENT 5.1:
+// - GUI: Buttons, list boxes, tabs, grid, text boxes ✅
+// - Objects/Classes: LogSession, LogLine, IsoTpPdu, UdsTransaction are objects ✅
+// - Inheritance: LogLine has “child classes” like UnknownLine (and others in Models) ✅
+// - Encapsulation: Data is stored inside classes (LogSession holds lists; LogLine holds info) ✅
+// - Reusability/Scaling: Multiple sessions up to MaxSessions ✅
 // ================================================================
 
-#nullable enable // Enable nullable reference type analysis (helps prevent null bugs).
+#nullable enable // Helps the compiler warn us if something might be null (missing).
 
 // ----------------------------
 // Project references (DLLs)
 // ----------------------------
 
-// AutoDecoder.Models: Contains LogLine base class + derived line types + LogSession etc.
-using AutoDecoder.Models;
-
-// AutoDecoder.Protocols.Classifiers: Logic that decides what type a line is (ISO/UDS/XML/ASCII/Unknown).
-using AutoDecoder.Protocols.Classifiers;
-
-// AutoDecoder.Protocols.Utilities: Aggregation + lookup tables (NRC meanings, DID descriptions, etc.).
-using AutoDecoder.Protocols.Utilities;
-
-// AutoDecoder.Protocols.Conversations: ISO-TP reassembly and pairing into request/response UDS transactions.
-using AutoDecoder.Protocols.Conversations;
+// Think of these like “toolboxes” we imported.
+// Each toolbox contains classes (building blocks) we can use.
+using AutoDecoder.Models;                 // LogLine, UnknownLine, LogSession (our main “data objects”)
+using AutoDecoder.Protocols.Classifiers;  // LineClassifier decides what type a line is
+using AutoDecoder.Protocols.Utilities;    // FindingsAggregator, UdsTables (lookup tables, summaries)
+using AutoDecoder.Protocols.Conversations;// Builds multi-line conversations (ISO-TP + UDS pairing)
 
 // ----------------------------
 // Standard .NET namespaces
 // ----------------------------
-using System;                    // Core types like DateTime, Action, Exception, etc.
-using System.Collections.Generic; // List<>, Dictionary<>, etc.
-using System.ComponentModel;      // BindingList<T> for data binding to WinForms controls.
-using System.Drawing;             // Fonts + colors for UI.
-using System.IO;                  // File.ReadAllLines, Path.GetFileName, etc.
-using System.Linq;                // LINQ helpers (Count, Where, Any, All, etc).
-using System.Windows.Forms;       // WinForms controls.
+// These are built-in .NET toolboxes.
+using System;                    // Basic stuff (DateTime, Exception, etc.)
+using System.Collections.Generic; // Lists and dictionaries (collections)
+using System.ComponentModel;      // BindingList (auto-updates UI when list changes)
+using System.Drawing;             // Fonts and colors
+using System.IO;                  // Reading files
+using System.Linq;                // Easy counting/filtering tools (Where, Count, Any, All)
+using System.Windows.Forms;       // Windows UI controls (buttons, grids, tabs)
 
 namespace AutoDecoder.Gui
 {
     /// <summary>
-    /// Main application window.
-    /// This form owns:
-    /// - Session management (up to MaxSessions)
-    /// - Loading lines (file/sample/paste)
-    /// - Classification + decode
-    /// - Filtering/search
-    /// - Summaries (NRC/DID counts + conversation count)
+    /// Form1 = the main window.
+    ///
+    /// 5th-grade translation:
+    /// This is the “main screen” of the app. Everything you see is built here.
+    ///
+    /// What it does:
+    /// - Holds sessions (each session is one loaded log set)
+    /// - Loads data (file/sample/paste)
+    /// - Turns raw text into LogLine objects (OOP)
+    /// - Filters/searches
+    /// - Shows summaries and “conversations”
     /// </summary>
     public class Form1 : Form
     {
         // ================================================================
-        // PROTOCOL-AWARE DERIVED DATA
+        // PROTOCOL-AWARE DERIVED DATA (extra “smart” data we build)
         // ================================================================
 
-        // List of reconstructed ISO-TP PDUs (multi-frame messages).
-        // This gets rebuilt after loading lines.
+        // ISO-TP PDUs are “combined messages”.
+        // Some car messages arrive in multiple chunks. This list stores the rebuilt full messages.
         private List<IsoTpPdu> _pdus = new();
 
-        // List of reconstructed UDS request/response transactions.
-        // This gets rebuilt after loading lines.
+        // UdsTransaction is like a “question and answer” pair:
+        // - Request: “Car, tell me X”
+        // - Response: “Here is X”
+        // This list stores those paired conversations.
         private List<UdsTransaction> _transactions = new();
 
         // ================================================================
-        // SPLIT CONTAINERS FOR LAYOUT
+        // SPLIT CONTAINERS FOR LAYOUT (they split the screen like a divider)
         // ================================================================
 
-        // Top-level split for decoded tab layout.
+        // Big split for the Decoded tab: top controls vs bottom results.
         private SplitContainer decodedRootSplit = null!;
 
-        // Split between grid and bottom detail panes.
+        // Split results area: table on top vs detail boxes on bottom.
         private SplitContainer decodedBottomSplit = null!;
 
-        // Split between raw text and decoded text panes.
+        // Split detail area: left raw text vs right decoded explanation.
         private SplitContainer rawDecodedSplit = null!;
 
         // ================================================================
         // SESSIONS (MULTI-LOG SUPPORT)
         // ================================================================
 
-        // Hard cap to prevent slow UI and too many loaded logs.
+        // We only allow up to 5 sessions so the app doesn’t get slow.
         private const int MaxSessions = 5;
 
-        // BindingList supports WinForms data binding and UI refresh.
+        // BindingList is a “smart list”:
+        // when we add/remove items, the UI updates automatically.
         private readonly BindingList<LogSession> _sessions = new();
 
-        // Tracks the currently selected session (the “active” log dataset).
+        // The session currently selected in the left list.
         private LogSession? _activeSession;
 
         // ================================================================
         // DATA (LINES + FILTERED VIEW)
         // ================================================================
 
-        // All lines for the active session (full dataset).
+        // All log lines (the full set) for the active session.
         private BindingList<LogLine> _allLogLines = new();
 
-        // Filtered view of lines (what the grid shows).
+        // Filtered lines (only the ones that match search/type/UDS filter).
+        // This is what the table/grid shows.
         private BindingList<LogLine> _filteredLogLines = new();
 
         // ================================================================
         // UI CONTROLS (CODE-ONLY UI)
         // ================================================================
 
-        // Main split: left navigation (sessions) vs right main content (tabs).
+        // Main split: left side = sessions, right side = tabs.
         private SplitContainer splitMain = null!;
 
-        // Session list (left nav).
+        // Left list showing sessions.
         private ListBox lstSessions = null!;
 
-        // Buttons for session lifecycle.
+        // Buttons for sessions.
         private Button btnAddSession = null!;
         private Button btnCloseSession = null!;
 
-        // Tab control for main views.
+        // Tabs on right side.
         private TabControl tabControl = null!;
-
-        // Tabs: decoded line-by-line view and summary view.
         private TabPage tabDecoded = null!;
         private TabPage tabSummary = null!;
 
-        // Grid showing filtered lines.
+        // The table showing lines.
         private DataGridView dgvLines = null!;
 
-        // Bottom panes: raw selected line and decoded details.
+        // Bottom text areas showing:
+        // - raw text (exact line)
+        // - decoded details (explanation)
         private RichTextBox rtbRaw = null!;
         private RichTextBox rtbDecoded = null!;
 
-        // Filter/search controls.
+        // Search and filter tools.
         private TextBox txtSearch = null!;
         private ComboBox cboTypeFilter = null!;
         private CheckBox chkUdsOnly = null!;
         private CheckBox chkMatchAllTerms = null!;
 
-        // Load/clear controls.
+        // Buttons for loading/clearing.
         private Button btnLoadFile = null!;
         private Button btnLoadSample = null!;
         private Button btnPaste = null!;
@@ -158,164 +168,173 @@ namespace AutoDecoder.Gui
         private Label lblSummaryUds = null!;
         private Label lblSummaryUnknown = null!;
 
-        // Summary list views for NRC and DID counts.
+        // Summary lists:
+        // - NRCs are “error codes”
+        // - DIDs are “data IDs” (like information IDs)
         private ListView lvNrc = null!;
         private ListView lvDid = null!;
 
-        // Guard flag to avoid wiring events multiple times.
+        // Safety flag so we don’t attach the same grid event multiple times.
         private bool _gridBindingHooked;
 
         // ================================================================
-        // CONSTRUCTOR
+        // CONSTRUCTOR (runs when the window is created)
         // ================================================================
 
         public Form1()
         {
-            // Build all UI controls (no designer file).
+            // BuildUi = create the screen controls (buttons, tabs, grid, etc.)
             BuildUi();
 
-            // Hook events (click, selection changed, filters, etc.).
+            // WireEvents = connect button clicks and changes to code methods.
             WireEvents();
 
-            // Create an initial session so the app starts “ready”.
+            // Start with one fresh session so the user can load logs immediately.
             CreateNewSession(makeActive: true);
         }
 
         // ================================================================
-        // UI BUILD
+        // UI BUILD (creating the screen layout)
         // ================================================================
 
         private void BuildUi()
         {
-            // Window title.
+            // Title text at the top of the window.
             Text = "AutoDecoder Workbench (Code-Only)";
 
-            // Initial window size.
+            // Size of the window when it opens.
             Width = 1400;
             Height = 850;
 
-            // Center the window on launch.
+            // Put the window in the middle of the screen.
             StartPosition = FormStartPosition.CenterScreen;
 
-            // Create main split container: left nav vs right content.
+            // Create the main “left vs right” divider.
             splitMain = new SplitContainer
             {
-                Dock = DockStyle.Fill,                     // Fill the form.
-                Orientation = Orientation.Vertical         // Vertical split: left/right.
+                Dock = DockStyle.Fill,              // Fill the entire form
+                Orientation = Orientation.Vertical  // Vertical means left/right split
             };
 
-            // Add split container to the form.
+            // Add it to the window.
             Controls.Add(splitMain);
 
             // ----------------------------
-            // Left panel (sessions + buttons)
+            // Left panel: sessions + buttons
             // ----------------------------
 
-            // Panel for session buttons, pinned to top.
+            // A small top area that holds the session buttons.
             var leftTop = new Panel { Dock = DockStyle.Top, Height = 78 };
 
-            // Button: create new session.
+            // Button: create a new session (new “workspace”)
             btnAddSession = new Button { Text = "New Session", Dock = DockStyle.Top, Height = 36 };
 
-            // Button: close active session.
+            // Button: close current session
             btnCloseSession = new Button { Text = "Close Session", Dock = DockStyle.Top, Height = 36 };
 
-            // Add buttons to top panel (order matters: last added appears on top for DockStyle.Top).
+            // Add buttons into the panel.
+            // Note: DockStyle.Top stacks controls; last added appears on top.
             leftTop.Controls.Add(btnCloseSession);
             leftTop.Controls.Add(btnAddSession);
 
-            // ListBox that shows sessions.
+            // Session list box (shows names of sessions)
             lstSessions = new ListBox
             {
-                Dock = DockStyle.Top,      // Dock to top so it sits below the buttons.
-                IntegralHeight = true      // Snap height to whole items.
+                Dock = DockStyle.Top,
+                IntegralHeight = true
             };
 
-            // Limit the visible height so the list doesn’t dominate the UI.
+            // We don’t want the session list to get too tall.
+            // MaxSessions lines visible, plus a little padding.
             lstSessions.Height = (lstSessions.ItemHeight * MaxSessions) + 6;
 
-            // Use Name property for session display.
+            // DisplayMember tells the ListBox what property to show as text.
+            // Each LogSession has a Name property.
             lstSessions.DisplayMember = "Name";
 
-            // Fill panel (unused for now, but gives clean layout and room for future left-side controls).
+            // Fill panel (extra space for future left-side controls)
             var leftFill = new Panel { Dock = DockStyle.Fill };
 
-            // IMPORTANT: Dock order: add Fill first, then top-docked controls.
+            // IMPORTANT: Add Fill first, then Top-docked panels.
             splitMain.Panel1.Controls.Add(leftFill);
             splitMain.Panel1.Controls.Add(lstSessions);
             splitMain.Panel1.Controls.Add(leftTop);
 
             // ----------------------------
-            // Right panel (tabs)
+            // Right panel: tabs (Decoded + Summary)
             // ----------------------------
 
-            // Create tab control for main views.
             tabControl = new TabControl { Dock = DockStyle.Fill };
 
-            // Create tabs.
+            // Create the two tabs.
             tabDecoded = new TabPage("Decoded");
             tabSummary = new TabPage("Summary");
 
-            // Add tabs to the tab control.
+            // Add them into the tab control.
             tabControl.TabPages.Add(tabDecoded);
             tabControl.TabPages.Add(tabSummary);
 
-            // Add tab control to the right panel.
+            // Put the tabs on the right side of the main split.
             splitMain.Panel2.Controls.Add(tabControl);
 
-            // Build contents of each tab.
+            // Build the contents inside each tab.
             BuildDecodedTab();
             BuildSummaryTab();
         }
 
         private void BuildDecodedTab()
         {
-            // Root split: top filter panel vs bottom content.
+            // This split makes:
+            // - Top area: buttons + search/filter controls
+            // - Bottom area: results table + details
             decodedRootSplit = new SplitContainer
             {
-                Dock = DockStyle.Fill,                 // Fill the decoded tab.
-                Orientation = Orientation.Horizontal,   // Horizontal split: top/bottom.
-                FixedPanel = FixedPanel.Panel1         // Keep top panel stable.
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal, // Top/bottom split
+                FixedPanel = FixedPanel.Panel1       // Keep top fixed height
             };
 
-            // Add root split to decoded tab.
             tabDecoded.Controls.Add(decodedRootSplit);
 
-            // Top layout panel that holds buttons + filters + status.
+            // Top panel using a grid layout (table layout).
+            // This helps align buttons and text boxes nicely.
             var top = new TableLayoutPanel
             {
-                Dock = DockStyle.Top,      // Pin to top.
-                AutoSize = true,           // Grow to fit contents.
-                ColumnCount = 10,          // 10 columns for controls.
-                RowCount = 2,              // 2 rows: controls + status.
-                Padding = new Padding(4),  // internal spacing.
-                Margin = new Padding(0)    // no extra outside margin.
+                Dock = DockStyle.Top,
+                AutoSize = true,
+                ColumnCount = 10,
+                RowCount = 2,
+                Padding = new Padding(4),
+                Margin = new Padding(0)
             };
 
-            // Define fixed/percent widths for each column.
+            // Column widths:
+            // Some are fixed pixels, one is “Percent 100” (stretchy search box).
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 80));   // LoadFile
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));   // LoadSample
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));   // Paste
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 60));   // Clear
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));   // Search label
-            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));   // Search textbox (expand)
+            top.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 100));   // Search textbox (grows)
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 55));   // Type label
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 160));  // Type dropdown
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 90));   // UDS only
             top.ColumnStyles.Add(new ColumnStyle(SizeType.Absolute, 120));  // Match all
 
-            // Clear and define row heights.
+            // Row heights:
+            // Row 0: buttons/filters
+            // Row 1: status info
             top.RowStyles.Clear();
-            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 28)); // row 0: controls
-            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 20)); // row 1: status
+            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 28));
+            top.RowStyles.Add(new RowStyle(SizeType.Absolute, 20));
 
-            // Create action buttons.
+            // Buttons that load/clear data.
             btnLoadFile = new Button { Text = "Load File", Dock = DockStyle.Fill, Margin = new Padding(2) };
             btnLoadSample = new Button { Text = "Load Sample", Dock = DockStyle.Fill, Margin = new Padding(2) };
             btnPaste = new Button { Text = "Paste", Dock = DockStyle.Fill, Margin = new Padding(2) };
             btnClear = new Button { Text = "Clear", Dock = DockStyle.Fill, Margin = new Padding(2) };
 
-            // Create “Search:” label.
+            // Labels for the filters.
             var lblSearch = new Label
             {
                 Text = "Search:",
@@ -324,14 +343,12 @@ namespace AutoDecoder.Gui
                 Margin = new Padding(2, 0, 2, 0)
             };
 
-            // Create search textbox.
             txtSearch = new TextBox
             {
                 Dock = DockStyle.Fill,
                 Margin = new Padding(2, 5, 2, 2)
             };
 
-            // Create “Type:” label.
             var lblType = new Label
             {
                 Text = "Type:",
@@ -340,27 +357,29 @@ namespace AutoDecoder.Gui
                 Margin = new Padding(2, 0, 2, 0)
             };
 
-            // Create type filter dropdown.
+            // Dropdown: user can pick which “kind of line” they want to see.
             cboTypeFilter = new ComboBox
             {
                 Dock = DockStyle.Fill,
-                DropDownStyle = ComboBoxStyle.DropDownList, // prevent arbitrary typing.
+                DropDownStyle = ComboBoxStyle.DropDownList, // user can’t type random values
                 Margin = new Padding(2, 5, 2, 2)
             };
 
-            // Checkbox: restrict to UDS lines.
+            // Checkbox: show only UDS-related lines (a special diagnostic protocol).
             chkUdsOnly = new CheckBox { Text = "UDS only", Dock = DockStyle.Fill, Margin = new Padding(8, 6, 2, 2) };
 
-            // Checkbox: require all tokens to match.
+            // Checkbox: “Match all terms” means:
+            // - ON: every search word must appear
+            // - OFF: at least one search word can appear
             chkMatchAllTerms = new CheckBox { Text = "Match all terms", Dock = DockStyle.Fill, Margin = new Padding(8, 6, 2, 2) };
 
-            // Populate type filter options.
-            cboTypeFilter.Items.Add("All"); // Always include “All” for no filtering.
+            // Add dropdown options.
+            cboTypeFilter.Items.Add("All");
             foreach (var v in Enum.GetValues(typeof(LineType)).Cast<LineType>())
                 cboTypeFilter.Items.Add(v.ToString());
-            cboTypeFilter.SelectedItem = "All"; // Default selection.
+            cboTypeFilter.SelectedItem = "All";
 
-            // Place controls into the TableLayoutPanel.
+            // Put controls into row 0.
             top.Controls.Add(btnLoadFile, 0, 0);
             top.Controls.Add(btnLoadSample, 1, 0);
             top.Controls.Add(btnPaste, 2, 0);
@@ -372,7 +391,7 @@ namespace AutoDecoder.Gui
             top.Controls.Add(chkUdsOnly, 8, 0);
             top.Controls.Add(chkMatchAllTerms, 9, 0);
 
-            // Status bar row container.
+            // Status row: simple counts shown in a line.
             var statusPanel = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -381,121 +400,118 @@ namespace AutoDecoder.Gui
                 Margin = new Padding(2, 0, 2, 0)
             };
 
-            // Create status labels.
+            // Labels show “how many lines of each type”.
             lblStatusTotal = new Label { AutoSize = true, Text = "Total: 0", Padding = new Padding(0, 4, 15, 0) };
             lblStatusIso = new Label { AutoSize = true, Text = "ISO: 0", Padding = new Padding(0, 4, 15, 0) };
             lblStatusXml = new Label { AutoSize = true, Text = "XML: 0", Padding = new Padding(0, 4, 15, 0) };
             lblStatusUnknown = new Label { AutoSize = true, Text = "Unknown: 0", Padding = new Padding(0, 4, 15, 0) };
 
-            // Add labels to status panel.
             statusPanel.Controls.Add(lblStatusTotal);
             statusPanel.Controls.Add(lblStatusIso);
             statusPanel.Controls.Add(lblStatusXml);
             statusPanel.Controls.Add(lblStatusUnknown);
 
-            // Add status panel to row 1 and span all columns.
+            // Put the status bar in row 1 spanning all columns.
             top.Controls.Add(statusPanel, 0, 1);
             top.SetColumnSpan(statusPanel, 10);
 
-            // Put top panel into the top split panel.
+            // Put the top table into the top split panel.
             decodedRootSplit.Panel1.Controls.Add(top);
 
-            // Bottom split: grid on top, detail panes on bottom.
+            // Bottom area: split between the grid and the raw/decoded panes.
             decodedBottomSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
-                Orientation = Orientation.Horizontal
+                Orientation = Orientation.Horizontal // top = grid, bottom = details
             };
-
-            // Add bottom split to the lower area.
             decodedRootSplit.Panel2.Controls.Add(decodedBottomSplit);
 
-            // Create DataGridView for log lines.
+            // Grid: shows each line as a row.
             dgvLines = new DataGridView
             {
-                Dock = DockStyle.Fill,                          // fill container
-                ReadOnly = true,                                // prevent editing
-                AllowUserToAddRows = false,                      // no extra blank row
-                AllowUserToDeleteRows = false,                   // prevent deletes
-                SelectionMode = DataGridViewSelectionMode.FullRowSelect, // select whole rows
-                MultiSelect = false,                             // single row at a time
-                AutoGenerateColumns = true                       // auto columns from LogLine properties
+                Dock = DockStyle.Fill,
+                ReadOnly = true, // user can’t edit the log data
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false,
+                SelectionMode = DataGridViewSelectionMode.FullRowSelect,
+                MultiSelect = false, // pick one row at a time
+                AutoGenerateColumns = true // make columns based on LogLine properties
             };
 
-            // Hook binding behavior once (removes unwanted columns, sizes, ordering safely).
+            // Important: apply “after binding” tweaks only once.
             HookGridBindingOnce();
 
-            // Add grid to upper panel of bottom split.
             decodedBottomSplit.Panel1.Controls.Add(dgvLines);
 
-            // Create split between raw and decoded.
+            // Bottom detail split: left raw text, right decoded explanation.
             rawDecodedSplit = new SplitContainer
             {
                 Dock = DockStyle.Fill,
-                Orientation = Orientation.Vertical
+                Orientation = Orientation.Vertical // left/right
             };
-
-            // Add raw/decoded split to the bottom panel.
             decodedBottomSplit.Panel2.Controls.Add(rawDecodedSplit);
 
-            // Raw line textbox (monospace font).
+            // Raw line view uses a monospaced font so logs align nicely.
             rtbRaw = new RichTextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
 
-            // Decoded detail textbox (monospace font).
+            // Decoded view also monospaced (hex and structured text looks better).
             rtbDecoded = new RichTextBox { Dock = DockStyle.Fill, Font = new Font("Consolas", 10) };
 
-            // Add text boxes to split panels.
             rawDecodedSplit.Panel1.Controls.Add(rtbRaw);
             rawDecodedSplit.Panel2.Controls.Add(rtbDecoded);
 
-            // Bind grid to filtered list so filters update the displayed rows.
+            // Bind grid to the filtered list.
+            // This means: the grid only shows what passes the filters.
             dgvLines.DataSource = _filteredLogLines;
 
-            // Configure grid behavior (resizing, column order).
+            // Set grid behaviors and consistent columns.
             ConfigureDataGridColumns();
         }
 
         private void HookGridBindingOnce()
         {
-            // If already hooked, do nothing (prevents duplicate event wiring).
-            if (_gridBindingHooked) return;
+            // This method’s job:
+            // Only attach the DataBindingComplete event one time.
+            // If we attached it multiple times, it would run multiple times and cause bugs.
 
-            // Mark as hooked.
+            if (_gridBindingHooked) return; // already done? stop.
             _gridBindingHooked = true;
 
-            // When binding completes (columns auto-generated), adjust the grid.
+            // DataBindingComplete happens after the grid auto-creates its columns.
             dgvLines.DataBindingComplete += (s, e) =>
             {
-                // Remove columns we do not want shown.
-                RemoveColumnIfExists(dgvLines, "Confidence"); // internal classifier confidence
-                RemoveColumnIfExists(dgvLines, "CanId");      // internal CAN ID, not part of your displayed design
+                // Remove columns we don’t want the user to see.
+                // “Confidence” = internal score from classifier (not needed for your UI).
+                // “CanId” = you chose to hide it (design decision).
+                RemoveColumnIfExists(dgvLines, "Confidence");
+                RemoveColumnIfExists(dgvLines, "CanId");
 
-                // Remove timestamp-related columns (per your design choice).
+                // Hide timestamp columns (your UI choice).
                 RemoveColumnIfExists(dgvLines, "Timestamp");
                 RemoveColumnIfExists(dgvLines, "TimestampText");
 
-                // Ensure CanNode is visible if it exists.
+                // Make sure “CanNode” is visible (node name is more helpful than raw CAN ID).
                 if (dgvLines.Columns.Contains("CanNode"))
                 {
                     var col = dgvLines.Columns["CanNode"];
                     if (col != null) col.Visible = true;
                 }
 
-                // Apply consistent widths/headers (no ordering here).
+                // Set widths and friendly headers.
                 ApplyColumnSizing();
 
-                // Apply safe ordering after sizing so DisplayIndex never crashes.
+                // Set left-to-right order safely.
                 ApplySafeDisplayOrder();
             };
         }
 
         private void ApplySafeDisplayOrder()
         {
-            // Defensive checks (avoid null/disposed).
+            // Defensive checks (avoid crashes if grid isn’t ready).
             if (dgvLines == null || dgvLines.IsDisposed) return;
             if (dgvLines.Columns == null || dgvLines.Columns.Count == 0) return;
 
-            // Desired visible column order (left to right).
+            // Desired order for columns (like arranging books on a shelf).
             string[] desired =
             {
                 "LineNumber",
@@ -506,31 +522,36 @@ namespace AutoDecoder.Gui
                 "CanNode"
             };
 
-            // Select columns that exist right now (since auto columns may vary).
+            // Only keep the columns that actually exist.
+            // (Sometimes different line types produce different auto-columns.)
             var cols = desired
                 .Where(n => dgvLines.Columns.Contains(n))
                 .Select(n => dgvLines.Columns[n])
                 .Where(c => c != null)
                 .ToList();
 
-            // Assign DisplayIndex sequentially (0..N-1) safely.
+            // Set DisplayIndex = column position in the grid.
             for (int i = 0; i < cols.Count; i++)
                 cols[i]!.DisplayIndex = i;
         }
 
         private static void RemoveColumnIfExists(DataGridView grid, string columnName)
         {
-            // If grid or Columns is not available, exit.
+            // If the grid is missing or has no columns, do nothing.
             if (grid?.Columns == null) return;
 
-            // If column exists, remove it.
+            // If the named column exists, remove it.
             if (grid.Columns.Contains(columnName))
                 grid.Columns.Remove(columnName);
         }
 
         private void BuildSummaryTab()
         {
-            // Main layout: two columns (NRC left, DID right) and top row for summary labels.
+            // This tab is like a “report card”:
+            // It shows totals and two tables:
+            // - NRC counts
+            // - DID counts
+
             var layout = new TableLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -539,20 +560,19 @@ namespace AutoDecoder.Gui
                 Padding = new Padding(10)
             };
 
-            // Each column gets half the width.
+            // Two equal columns.
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
 
-            // Row 0 is fixed for labels; row 1 takes remaining space.
+            // Top row is fixed height, bottom row fills rest.
             layout.RowStyles.Clear();
             layout.RowStyles.Add(new RowStyle(SizeType.Absolute, 44));
             layout.RowStyles.Add(new RowStyle(SizeType.Percent, 100));
 
-            // Clear previous controls and add fresh layout.
             tabSummary.Controls.Clear();
             tabSummary.Controls.Add(layout);
 
-            // Top label bar.
+            // Top labels bar.
             var top = new FlowLayoutPanel
             {
                 Dock = DockStyle.Fill,
@@ -565,16 +585,14 @@ namespace AutoDecoder.Gui
             lblSummaryUds = new Label { AutoSize = true, Text = "UDS Findings: 0", Padding = new Padding(0, 10, 20, 0) };
             lblSummaryUnknown = new Label { AutoSize = true, Text = "Unknown: 0", Padding = new Padding(0, 10, 20, 0) };
 
-            // Add summary labels.
             top.Controls.Add(lblSummaryIso);
             top.Controls.Add(lblSummaryUds);
             top.Controls.Add(lblSummaryUnknown);
 
-            // Add top bar spanning both columns.
             layout.Controls.Add(top, 0, 0);
             layout.SetColumnSpan(top, 2);
 
-            // NRC list view definition.
+            // NRC list view (table).
             lvNrc = new ListView
             {
                 Dock = DockStyle.Fill,
@@ -582,13 +600,11 @@ namespace AutoDecoder.Gui
                 FullRowSelect = true,
                 GridLines = true
             };
-
-            // NRC columns.
             lvNrc.Columns.Add("NRC", 90);
             lvNrc.Columns.Add("Meaning", 260);
             lvNrc.Columns.Add("Count", 80);
 
-            // DID list view definition.
+            // DID list view (table).
             lvDid = new ListView
             {
                 Dock = DockStyle.Fill,
@@ -596,60 +612,60 @@ namespace AutoDecoder.Gui
                 FullRowSelect = true,
                 GridLines = true
             };
-
-            // DID columns.
             lvDid.Columns.Add("DID", 90);
             lvDid.Columns.Add("Name", 260);
             lvDid.Columns.Add("Count", 80);
 
-            // Group box around NRC list.
+            // Put list views inside labeled boxes.
             var gbNrc = new GroupBox { Text = "NRCs", Dock = DockStyle.Fill };
             gbNrc.Controls.Add(lvNrc);
 
-            // Group box around DID list.
             var gbDid = new GroupBox { Text = "DIDs", Dock = DockStyle.Fill };
             gbDid.Controls.Add(lvDid);
 
-            // Place group boxes in layout.
             layout.Controls.Add(gbNrc, 0, 1);
             layout.Controls.Add(gbDid, 1, 1);
         }
 
         private void WireEvents()
         {
-            // Hook button clicks.
+            // “Events” are like “when this happens, do that”.
+            // Example: “When you click Load File, run BtnLoadFile_Click”.
+
             btnLoadFile.Click += BtnLoadFile_Click;
             btnLoadSample.Click += BtnLoadSample_Click;
             btnPaste.Click += BtnPaste_Click;
             btnClear.Click += BtnClear_Click;
 
-            // Hook grid events.
-            dgvLines.RowPrePaint += DgvLines_RowPrePaint;                 // color coding by content
-            dgvLines.SelectionChanged += DgvLines_SelectionChanged;       // update raw/decoded panes
+            // Color rows based on what kind of UDS message it looks like.
+            dgvLines.RowPrePaint += DgvLines_RowPrePaint;
 
-            // Hook filter events so UI updates instantly as user types/changes.
+            // When user clicks a row, show details in bottom text boxes.
+            dgvLines.SelectionChanged += DgvLines_SelectionChanged;
+
+            // Filters update live.
             txtSearch.TextChanged += FilterControls_Changed;
             cboTypeFilter.SelectedIndexChanged += FilterControls_Changed;
             chkUdsOnly.CheckedChanged += FilterControls_Changed;
             chkMatchAllTerms.CheckedChanged += FilterControls_Changed;
 
-            // Hook summary interactions (click NRC/DID to jump to filtered view).
+            // Clicking summary items jumps you back to matching lines.
             lvNrc.ItemActivate += LvNrc_ItemActivate;
             lvDid.ItemActivate += LvDid_ItemActivate;
 
-            // Hook session management.
+            // Session controls.
             btnAddSession.Click += BtnAddSession_Click;
             btnCloseSession.Click += BtnCloseSession_Click;
             lstSessions.SelectedIndexChanged += LstSessions_SelectedIndexChanged;
         }
 
         // ================================================================
-        // SESSIONS
+        // SESSIONS (like having multiple notebooks)
         // ================================================================
 
         private void CreateNewSession(bool makeActive)
         {
-            // Enforce max session count.
+            // If we already have 5 sessions, do not allow more.
             if (_sessions.Count >= MaxSessions)
             {
                 MessageBox.Show($"Max sessions reached ({MaxSessions}).", "Sessions",
@@ -657,37 +673,38 @@ namespace AutoDecoder.Gui
                 return;
             }
 
-            // Create a new session object (instance).
+            // Create a new LogSession object.
+            // This is an “object” (a real instance) of the LogSession class.
             var s = new LogSession
             {
-                // Give the session a default timestamped name.
+                // Give it a name including time, so each is unique.
                 Name = $"Session {_sessions.Count + 1} - {DateTime.Now:HH:mm:ss}"
             };
 
-            // Add session to the binding list.
+            // Add it to our session list (BindingList updates UI automatically).
             _sessions.Add(s);
 
-            // Bind session list if not already bound.
+            // Connect listbox to sessions if it isn’t connected yet.
             if (lstSessions.DataSource == null)
                 lstSessions.DataSource = _sessions;
 
-            // Optionally make it the active session.
+            // If we want this to become active right away:
             if (makeActive)
             {
-                // Select it visually.
+                // Highlight the session in the list.
                 lstSessions.SelectedItem = s;
 
-                // Switch active session backing data.
+                // Actually switch the app’s data to this session.
                 SetActiveSession(s);
             }
         }
 
         private void SetActiveSession(LogSession? session)
         {
-            // Store the new active session.
+            // Save which session is active.
             _activeSession = session;
 
-            // If no session is active, clear data safely.
+            // If no session exists, clear things safely.
             if (_activeSession == null)
             {
                 _allLogLines = new BindingList<LogLine>();
@@ -698,119 +715,93 @@ namespace AutoDecoder.Gui
                 return;
             }
 
-            // Point our form-level bindings at the session’s lists.
+            // Here is encapsulation in action:
+            // LogSession *owns* the lists internally.
+            // We just point our UI to those lists.
             _allLogLines = _activeSession.AllLines;
             _filteredLogLines = _activeSession.FilteredLines;
 
-            // Rebind grid to the new filtered list.
+            // Rebind grid to this session’s filtered list.
             dgvLines.DataSource = _filteredLogLines;
 
-            // Reapply filters for this session.
+            // Apply whatever filters are currently selected.
             ApplyFilters();
 
-            // Update the UI counts.
+            // Update counts and summary.
             UpdateStatusBar();
-
-            // Update summary tab counts.
             UpdateFindingsSummary();
         }
 
         private void BtnAddSession_Click(object? sender, EventArgs e)
-            => CreateNewSession(makeActive: true); // Create session and immediately activate it.
+            => CreateNewSession(makeActive: true);
 
         private void BtnCloseSession_Click(object? sender, EventArgs e)
         {
-            // If no session is active, nothing to close.
             if (_activeSession == null) return;
 
-            // Remember index so we can select a reasonable next session.
             int idx = lstSessions.SelectedIndex;
-
-            // Store reference to close.
             var toClose = _activeSession;
 
-            // Remove from session list.
             _sessions.Remove(toClose);
 
-            // If nothing remains, create a fresh session.
+            // If no sessions left, make a new one automatically.
             if (_sessions.Count == 0)
             {
                 CreateNewSession(makeActive: true);
                 return;
             }
 
-            // Choose next index (same position if possible, otherwise last).
+            // Select another session: same index if possible, else last.
             int nextIdx = Math.Min(idx, _sessions.Count - 1);
-
-            // Select next session.
             lstSessions.SelectedIndex = nextIdx;
 
-            // Activate the selected session.
             SetActiveSession(lstSessions.SelectedItem as LogSession);
         }
 
         private void LstSessions_SelectedIndexChanged(object? sender, EventArgs e)
-            => SetActiveSession(lstSessions.SelectedItem as LogSession); // Activate whichever session user clicks.
+            => SetActiveSession(lstSessions.SelectedItem as LogSession);
 
         // ================================================================
-        // GRID / FILTERS / DECODING
+        // GRID SETTINGS
         // ================================================================
 
         private void ConfigureDataGridColumns()
         {
-            // Disable autosizing so our widths are consistent/predictable.
+            // Turn off auto-sizing so columns don’t jump around.
             dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
 
-            // Let user resize columns.
+            // Let user resize and reorder columns if they want.
             dgvLines.AllowUserToResizeColumns = true;
-
-            // Let user reorder columns (even though we set a default order).
             dgvLines.AllowUserToOrderColumns = true;
         }
 
-        /// <summary>
-        /// Applies consistent column widths and readable headers after binding.
-        /// IMPORTANT: Does NOT set DisplayIndex (ordering is handled elsewhere).
-        /// </summary>
         private void ApplyColumnSizing()
         {
-            // Defensive checks.
+            // Safety checks.
             if (dgvLines == null || dgvLines.IsDisposed) return;
             if (dgvLines.Columns == null || dgvLines.Columns.Count == 0) return;
 
-            // Ensure we do not autosize unpredictably.
             dgvLines.AutoSizeColumnsMode = DataGridViewAutoSizeColumnsMode.None;
 
-            // Helper that sets width + header if the column exists.
+            // Helper method: “If this column exists, set it up”.
             void SetCol(string name, int width, string? header = null)
             {
-                // If the named column isn’t present, skip.
                 if (!dgvLines.Columns.Contains(name)) return;
 
-                // Get the column object.
                 var col = dgvLines.Columns[name];
-
-                // If the column object is missing, skip.
                 if (col == null) return;
 
-                // Ensure column is visible.
                 col.Visible = true;
-
-                // Set fixed width.
                 col.Width = width;
-
-                // Ensure fixed mode.
                 col.AutoSizeMode = DataGridViewAutoSizeColumnMode.None;
-
-                // Allow resizing.
                 col.Resizable = DataGridViewTriState.True;
 
-                // Apply friendly header text if provided.
                 if (!string.IsNullOrWhiteSpace(header))
                     col.HeaderText = header;
             }
 
-            // Size and label the columns you care about.
+            // Choose the columns that matter for your UI.
+            // (Think of these as the “main story” columns.)
             SetCol("LineNumber", 80, "Line");
             SetCol("Raw", 360, "Raw");
             SetCol("Type", 95, "Type");
@@ -818,7 +809,7 @@ namespace AutoDecoder.Gui
             SetCol("Details", 520, "Technical Breakdown");
             SetCol("CanNode", 170, "Node");
 
-            // Prevent wrapping in Details column to keep rows compact.
+            // Keep Details from wrapping (wrapping makes rows huge).
             if (dgvLines.Columns.Contains("Details"))
             {
                 var c = dgvLines.Columns["Details"];
@@ -828,26 +819,27 @@ namespace AutoDecoder.Gui
 
         private void DgvLines_RowPrePaint(object? sender, DataGridViewRowPrePaintEventArgs e)
         {
-            // Ignore invalid row index.
+            // RowPrePaint runs before a row is drawn.
+            // We use it to color rows like “traffic lights”:
+            // - red-ish = negative response (problem)
+            // - blue = request (question)
+            // - green = positive response (answer)
+
             if (e.RowIndex < 0 || e.RowIndex >= dgvLines.Rows.Count) return;
 
-            // Get the row.
             var row = dgvLines.Rows[e.RowIndex];
-
-            // Attempt to get the bound LogLine object.
             var logLine = row.DataBoundItem as LogLine;
 
-            // If something is wrong, default to white.
             if (logLine == null)
             {
                 row.DefaultCellStyle.BackColor = Color.White;
                 return;
             }
 
-            // Only color-code ISO15765 lines (UDS over CAN / ISO-TP).
+            // Only color ISO15765 lines because that’s the UDS-over-CAN style data.
             if (logLine.Type == LineType.Iso15765)
             {
-                // Negative response highlighting.
+                // Negative Response = usually contains “7F” in UDS.
                 if (logLine.Details?.Contains("Negative Response", StringComparison.OrdinalIgnoreCase) == true ||
                     logLine.Details?.Contains("0x7F", StringComparison.OrdinalIgnoreCase) == true)
                 {
@@ -855,14 +847,14 @@ namespace AutoDecoder.Gui
                     return;
                 }
 
-                // Request highlighting.
+                // Request lines.
                 if (logLine.Details?.Contains("UDS Request", StringComparison.OrdinalIgnoreCase) == true)
                 {
                     row.DefaultCellStyle.BackColor = Color.LightSkyBlue;
                     return;
                 }
 
-                // Positive response highlighting.
+                // Positive Response lines (example: 0x62 is positive response to 0x22).
                 if (logLine.Details?.Contains("UDS Positive Response", StringComparison.OrdinalIgnoreCase) == true ||
                     logLine.Details?.Contains("(0x62)", StringComparison.OrdinalIgnoreCase) == true)
                 {
@@ -871,36 +863,38 @@ namespace AutoDecoder.Gui
                 }
             }
 
-            // Default background.
             row.DefaultCellStyle.BackColor = Color.White;
         }
 
+        // ================================================================
+        // LOADING DATA (file / sample / paste)
+        // ================================================================
+
         private void BtnLoadFile_Click(object? sender, EventArgs e)
         {
-            // Configure open file dialog.
+            // OpenFileDialog = Windows file picker popup.
             using var ofd = new OpenFileDialog
             {
                 Title = "Select Log File",
                 Filter = "Text Files (*.txt)|*.txt|Log Files (*.log)|*.log|All Files (*.*)|*.*"
             };
 
-            // If user cancels, exit.
+            // If user cancels, stop.
             if (ofd.ShowDialog() != DialogResult.OK) return;
 
             try
             {
-                // Read all lines from selected file.
+                // Read all lines from the file into a string array.
                 var lines = File.ReadAllLines(ofd.FileName);
 
-                // Use filename as session name for clarity.
+                // Use the file name as the session name.
                 string fileName = Path.GetFileName(ofd.FileName);
 
-                // Load and process these lines.
+                // Load and process these lines into the app.
                 LoadLines(lines, sessionName: fileName);
             }
             catch (Exception ex)
             {
-                // Show user-friendly error.
                 MessageBox.Show($"Error loading file: {ex.Message}", "Load Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -908,7 +902,8 @@ namespace AutoDecoder.Gui
 
         private void BtnLoadSample_Click(object? sender, EventArgs e)
         {
-            // Hard-coded sample lines that exercise ISO/UDS, ASCII, and XML.
+            // These sample lines are like a “practice worksheet”
+            // to prove the tool can decode different kinds of content.
             string[] sampleLines =
             {
                 "2025-10-21T10:23:45.123 ISO15765 RX <- [00,00,07,D8,7F,22,78]",
@@ -919,34 +914,24 @@ namespace AutoDecoder.Gui
                 "<ns3:didValue didValue=\"F188\" type=\"Strategy\"><ns3:Response>4D59535452415445475931</ns3:Response></ns3:didValue>",
             };
 
-            // Load sample lines into active session.
             LoadLines(sampleLines, sessionName: "Sample");
         }
 
         private void BtnClear_Click(object? sender, EventArgs e)
         {
-            // Clear active full list.
+            // Clear the lists and UI text boxes (like erasing the whiteboard).
             _allLogLines.Clear();
-
-            // Clear active filtered list.
             _filteredLogLines.Clear();
-
-            // Clear raw text pane.
             rtbRaw.Clear();
-
-            // Clear decoded text pane.
             rtbDecoded.Clear();
 
-            // Refresh counts.
             UpdateStatusBar();
-
-            // Refresh summary tab.
             UpdateFindingsSummary();
         }
 
         private void BtnPaste_Click(object? sender, EventArgs e)
         {
-            // If clipboard has no text, warn the user.
+            // Clipboard = what you copied (Ctrl+C).
             if (!Clipboard.ContainsText())
             {
                 MessageBox.Show("Clipboard does not contain text.", "Paste",
@@ -954,10 +939,8 @@ namespace AutoDecoder.Gui
                 return;
             }
 
-            // Get clipboard text.
             var text = Clipboard.GetText();
 
-            // If clipboard text is blank, warn user.
             if (string.IsNullOrWhiteSpace(text))
             {
                 MessageBox.Show("Clipboard text is empty.", "Paste",
@@ -965,55 +948,57 @@ namespace AutoDecoder.Gui
                 return;
             }
 
-            // Split clipboard into lines using common newline formats.
+            // Split the text into individual lines.
             var lines = text.Split(new[] { "\r\n", "\r", "\n" }, StringSplitOptions.None);
 
-            // Load the pasted lines.
             LoadLines(lines, sessionName: "Pasted");
         }
 
+        // ================================================================
+        // WHEN USER SELECTS A ROW
+        // ================================================================
+
         private void DgvLines_SelectionChanged(object? sender, EventArgs e)
         {
-            // If no row is selected, do nothing.
+            // If nothing selected, do nothing.
             if (dgvLines.SelectedRows.Count <= 0) return;
 
-            // Get selected row.
             var row = dgvLines.SelectedRows[0];
 
-            // Ensure the bound item is a LogLine.
+            // Each row represents a LogLine object.
             if (row.DataBoundItem is not LogLine logLine) return;
 
-            // Display raw text in raw pane (defensive null handling).
+            // Show the exact original text of that line.
             rtbRaw.Text = logLine.Raw ?? string.Empty;
 
-            // Display decoded details in decoded pane (defensive null handling).
+            // Show the decoded “explanation” of that line.
             rtbDecoded.Text = logLine.Details ?? string.Empty;
         }
 
+        // ================================================================
+        // FILTERING (search + type + UDS-only)
+        // ================================================================
+
         private void FilterControls_Changed(object? sender, EventArgs e)
-            => ApplyFilters(); // Whenever a filter changes, recalculate filtered list.
+            => ApplyFilters();
 
         private static List<string> TokenizeSearch(string input)
         {
-            // Tokens list we will return.
-            var tokens = new List<string>();
+            // This turns search text into “tokens” (little search pieces).
+            // Example:
+            //   hello world   -> ["hello", "world"]
+            //   "hello world" -> ["hello world"] (quotes keep it together)
 
-            // If input is empty, return no tokens.
+            var tokens = new List<string>();
             if (string.IsNullOrWhiteSpace(input)) return tokens;
 
-            // Track whether we are inside quotes.
             bool inQuotes = false;
-
-            // Build current token progressively.
             var current = new System.Text.StringBuilder();
 
-            // Walk every character.
             foreach (char c in input)
             {
-                // Toggle quoting state on double-quote.
                 if (c == '"') { inQuotes = !inQuotes; continue; }
 
-                // If we see a space outside quotes, finalize the current token.
                 if (c == ' ' && !inQuotes)
                 {
                     if (current.Length > 0)
@@ -1024,25 +1009,26 @@ namespace AutoDecoder.Gui
                 }
                 else
                 {
-                    // Otherwise add character to current token.
                     current.Append(c);
                 }
             }
 
-            // Add last token if any.
             if (current.Length > 0) tokens.Add(current.ToString().Trim());
 
-            // Remove blanks and return clean token list.
             return tokens.Where(t => !string.IsNullOrWhiteSpace(t)).ToList();
         }
 
+        // ================================================================
+        // THE BIG WORK: Load lines -> classify -> decode -> show
+        // ================================================================
+
         private void LoadLines(string[] lines, string? sessionName = null)
         {
-            // If no active session, create one so data has a home.
+            // If we somehow have no active session, create one.
             if (_activeSession == null)
                 CreateNewSession(makeActive: true);
 
-            // If sessionName is provided, rename the session for clarity.
+            // Rename session if a name was provided (like file name or “Sample”).
             if (_activeSession != null && !string.IsNullOrWhiteSpace(sessionName))
             {
                 _activeSession.Name = sessionName;
@@ -1051,61 +1037,55 @@ namespace AutoDecoder.Gui
 
             try
             {
-                // Clear existing data for current session.
+                // Start fresh for this session’s data.
                 _allLogLines.Clear();
                 _filteredLogLines.Clear();
 
-                // Loop through each raw input line.
+                // Loop through each line in the input.
                 for (int i = 0; i < lines.Length; i++)
                 {
-                    // Pull the raw line string.
                     string rawLine = lines[i];
-
-                    // Convert to 1-based line numbering for display.
-                    int lineNumber = i + 1;
+                    int lineNumber = i + 1; // humans count from 1, not 0
 
                     try
                     {
-                        // Classify line into correct derived class (inheritance).
+                        // OOP + Inheritance moment:
+                        // Classify returns a LogLine, but it might actually be a “child class”
+                        // like Iso15765Line, XmlLine, AsciiLine, UnknownLine, etc.
                         var logLine = LineClassifier.Classify(lineNumber, rawLine);
 
-                        // Decode/parse the line (fills Summary/Details, etc.).
+                        // Each LogLine knows how to decode itself.
+                        // This is encapsulation: the logic stays inside the object.
                         logLine.ParseAndDecode();
 
-                        // Add to all-lines collection.
+                        // Add to the master list.
                         _allLogLines.Add(logLine);
                     }
                     catch (Exception ex)
                     {
-                        // If classification/decode fails, store as UnknownLine with error reason.
+                        // If decoding fails, we still keep the line.
+                        // We store it as UnknownLine with an error message.
                         var errorLine = new UnknownLine(lineNumber, rawLine, $"Error: {ex.Message}");
-
-                        // Still call ParseAndDecode so details are consistent.
                         errorLine.ParseAndDecode();
-
-                        // Add error line as part of dataset (keeps indexing consistent).
                         _allLogLines.Add(errorLine);
                     }
                 }
 
-                // Apply current UI filters to produce the filtered list.
+                // Now produce the filtered list based on current UI filters.
                 ApplyFilters();
 
-                // Build ISO-TP PDUs from all lines (multi-frame reassembly).
+                // Build multi-frame messages (ISO-TP reassembly).
                 _pdus = IsoTpReassembler.Build(_allLogLines);
 
-                // Build UDS transactions from PDUs (request/response pairing).
+                // Build request/response conversations (UDS transactions).
                 _transactions = UdsConversationBuilder.Build(_pdus);
 
-                // Update status counts.
+                // Update counts + summary view.
                 UpdateStatusBar();
-
-                // Update summary tab.
                 UpdateFindingsSummary();
             }
             catch (Exception ex)
             {
-                // If anything fails at a higher level, show error dialog.
                 MessageBox.Show($"Error loading lines: {ex.Message}", "Load Error",
                     MessageBoxButtons.OK, MessageBoxIcon.Error);
             }
@@ -1113,40 +1093,33 @@ namespace AutoDecoder.Gui
 
         private void ApplyFilters()
         {
-            // Get search string from UI (defensive null handling).
+            // Read filter settings from UI.
             string searchText = (txtSearch.Text ?? string.Empty).Trim();
-
-            // Tokenize (supports quoted phrases).
             var tokens = TokenizeSearch(searchText);
 
-            // Determine whether we require ALL tokens or just ANY token.
             bool matchAll = chkMatchAllTerms.Checked;
-
-            // Get type filter selection (or “All”).
             string typeFilter = cboTypeFilter.SelectedItem?.ToString() ?? "All";
-
-            // Determine whether to enforce UDS-only filtering.
             bool udsOnly = chkUdsOnly.Checked;
 
-            // Clear current filtered results.
+            // Clear filtered results so we can rebuild it.
             _filteredLogLines.Clear();
 
-            // Walk through all lines and decide whether to include each one.
+            // Check every line to see if it should be kept.
             foreach (var logLine in _allLogLines)
             {
-                // Create a combined searchable field from multiple properties.
+                // Combine fields into one searchable text.
                 string combined =
                     (logLine.Raw ?? "") + " " +
                     (logLine.Summary ?? "") + " " +
                     (logLine.Details ?? "");
 
-                // Normalize searchable field to reduce punctuation mismatch.
+                // Normalize to make searching easier.
                 string field = NormalizeForSearch(combined);
 
-                // Default: line matches search if no tokens are provided.
+                // If no tokens, it matches by default.
                 bool matchesSearch = true;
 
-                // If there are tokens, enforce match logic.
+                // If tokens exist, enforce match logic.
                 if (tokens.Count > 0)
                 {
                     matchesSearch = matchAll
@@ -1154,38 +1127,38 @@ namespace AutoDecoder.Gui
                         : tokens.Any(t => field.Contains(NormalizeForSearch(t)));
                 }
 
-                // Type filter: pass if “All”, otherwise exact type string match.
+                // Type filter:
+                // - If “All”, everything passes
+                // - Otherwise, only exact type matches
                 bool matchesType = typeFilter == "All" || logLine.Type.ToString() == typeFilter;
 
-                // UDS-only: pass if checkbox not checked, otherwise require “UDS” in details.
+                // UDS-only filter:
+                // If checked, require “UDS” to show up in decoded details.
                 bool matchesUds =
                     !udsOnly ||
                     (logLine.Details?.Contains("UDS", StringComparison.OrdinalIgnoreCase) == true);
 
-                // If all criteria pass, include the line in the filtered list.
+                // If all conditions are true, keep it in filtered list.
                 if (matchesSearch && matchesType && matchesUds)
                     _filteredLogLines.Add(logLine);
             }
 
-            // Update summary after filter changes.
+            // Update summary based on what’s currently visible.
             UpdateFindingsSummary();
         }
 
+        // ================================================================
+        // STATUS + SUMMARY UPDATES
+        // ================================================================
+
         private void UpdateStatusBar()
         {
-            // Total line count.
+            // Count totals in the FULL dataset (not filtered).
             int total = _allLogLines.Count;
-
-            // Count ISO15765 lines.
             int iso = _allLogLines.Count(l => l.Type == LineType.Iso15765);
-
-            // Count XML lines.
             int xml = _allLogLines.Count(l => l.Type == LineType.Xml);
-
-            // Count Unknown lines.
             int unk = _allLogLines.Count(l => l.Type == LineType.Unknown);
 
-            // Update label text.
             lblStatusTotal.Text = $"Total: {total}";
             lblStatusIso.Text = $"ISO: {iso}";
             lblStatusXml.Text = $"XML: {xml}";
@@ -1194,209 +1167,154 @@ namespace AutoDecoder.Gui
 
         private void UpdateFindingsSummary()
         {
-            // Build a summary object from the currently filtered lines.
+            // Build a summary from the FILTERED lines (what the user is looking at).
             var summary = FindingsAggregator.Build(_filteredLogLines);
 
-            // Update summary label values.
             lblSummaryIso.Text = $"ISO Lines: {summary.IsoLines}";
             lblSummaryUds.Text = $"UDS Findings: {summary.UdsFindingLines}";
             lblSummaryUnknown.Text = $"Unknown: {summary.UnknownLines}";
 
-            // Populate NRC list view.
+            // Fill list views with counts.
             PopulateNrcListView(summary.NrcCounts);
-
-            // Populate DID list view.
             PopulateDidListView(summary.DidCounts);
 
-            // Append reconstructed conversation count for extra insight.
+            // Add how many conversations we reconstructed.
             lblSummaryUds.Text += $" | Conversations: {_transactions?.Count ?? 0}";
         }
 
         private void PopulateNrcListView(Dictionary<byte, int> nrcCounts)
         {
-            // Prevent flicker while updating.
+            // BeginUpdate prevents flicker (screen flashing) during changes.
             lvNrc.BeginUpdate();
-
-            // Clear existing items.
             lvNrc.Items.Clear();
 
-            // Sort NRCs by count desc, then by code asc.
             foreach (var kvp in nrcCounts.OrderByDescending(k => k.Value).ThenBy(k => k.Key))
             {
-                // NRC code.
                 byte nrc = kvp.Key;
-
-                // Occurrence count.
                 int count = kvp.Value;
 
-                // Lookup NRC meaning or fallback.
+                // Lookup meaning for NRC code.
                 string meaning =
                     UdsTables.NrcMeaning.TryGetValue(nrc, out var m)
                         ? m
                         : "UnknownNRC";
 
-                // Create list item with formatted NRC hex.
                 var item = new ListViewItem($"0x{nrc:X2}");
-
-                // Add meaning column.
                 item.SubItems.Add(meaning);
-
-                // Add count column.
                 item.SubItems.Add(count.ToString());
 
-                // Store NRC in Tag for click behavior.
+                // Tag stores the code so clicking the row knows which NRC it represents.
                 item.Tag = nrc;
 
-                // Add item to list view.
                 lvNrc.Items.Add(item);
             }
 
-            // Resume drawing.
             lvNrc.EndUpdate();
         }
 
         private void PopulateDidListView(Dictionary<ushort, int> didCounts)
         {
-            // Prevent flicker while updating.
             lvDid.BeginUpdate();
-
-            // Clear existing items.
             lvDid.Items.Clear();
 
-            // Sort DIDs by count desc, then by DID asc.
             foreach (var kvp in didCounts.OrderByDescending(k => k.Value).ThenBy(k => k.Key))
             {
-                // DID code.
                 ushort did = kvp.Key;
-
-                // Occurrence count.
                 int count = kvp.Value;
 
-                // Resolve DID name/description.
                 string name = UdsTables.DescribeDid(did);
 
-                // Create list item with formatted DID hex.
                 var item = new ListViewItem($"0x{did:X4}");
-
-                // Add DID name column.
                 item.SubItems.Add(name);
-
-                // Add count column.
                 item.SubItems.Add(count.ToString());
-
-                // Store DID in Tag for click behavior.
                 item.Tag = did;
 
-                // Add item to list.
                 lvDid.Items.Add(item);
             }
 
-            // Resume drawing.
             lvDid.EndUpdate();
         }
 
+        // Clicking an NRC row sets the search box to that NRC and jumps to Decoded tab.
         private void LvNrc_ItemActivate(object? sender, EventArgs e)
         {
-            // If nothing selected, do nothing.
             if (lvNrc.SelectedItems.Count <= 0) return;
 
-            // Pull NRC code from Tag.
             byte nrc = (byte)(lvNrc.SelectedItems[0].Tag ?? (byte)0);
 
-            // Set search box to NRC string (triggers filtering through TextChanged handler).
+            // Setting txtSearch triggers ApplyFilters automatically (TextChanged event).
             txtSearch.Text = $"0x{nrc:X2}";
 
-            // Bring user back to decoded tab to see matching lines.
             tabControl.SelectedTab = tabDecoded;
         }
 
+        // Clicking a DID row does the same for DIDs.
         private void LvDid_ItemActivate(object? sender, EventArgs e)
         {
-            // If nothing selected, do nothing.
             if (lvDid.SelectedItems.Count <= 0) return;
 
-            // Pull DID code from Tag.
             ushort did = (ushort)(lvDid.SelectedItems[0].Tag ?? (ushort)0);
 
-            // Set search box to DID string.
             txtSearch.Text = $"0x{did:X4}";
-
-            // Switch to decoded tab.
             tabControl.SelectedTab = tabDecoded;
         }
 
         // ================================================================
-        // SPLITTER SAFETY (PREVENT “JACKED UP” UI / CRASHES)
+        // SPLITTER SAFETY (prevents UI from breaking during resizing)
         // ================================================================
 
         private static bool TryClampSplitter(SplitContainer s)
         {
-            // If the splitter is invalid, abort safely.
+            // Clamping means: “keep the splitter inside safe limits”
+            // so Windows doesn’t throw an error.
+
             if (s == null || s.IsDisposed) return false;
 
-            // Determine the usable size depending on orientation.
             int size = (s.Orientation == Orientation.Vertical) ? s.Width : s.Height;
-
-            // If control has no size yet, skip.
             if (size <= 0) return false;
 
-            // Minimum size for panel1.
             int min = s.Panel1MinSize;
-
-            // Maximum allowable splitter distance based on panel2 minimum and splitter width.
             int max = size - s.SplitterWidth - s.Panel2MinSize;
 
-            // If max is less than min, we can’t clamp safely.
             if (max < min) return false;
 
-            // The requested splitter distance.
             int desired = s.SplitterDistance;
-
-            // Clamp desired into [min, max].
             int clamped = Math.Max(min, Math.Min(desired, max));
 
-            // If clamped differs, apply it.
             if (clamped != desired)
                 s.SplitterDistance = clamped;
 
-            // Success.
             return true;
         }
 
         protected override void OnShown(EventArgs e)
         {
-            // Call base behavior.
             base.OnShown(e);
 
-            // Delay layout tuning until after the form is fully shown.
+            // BeginInvoke delays until after the form is visible.
+            // This avoids “size is 0” problems.
             BeginInvoke(new Action(() =>
             {
-                // Minimum widths for main split.
                 splitMain.Panel1MinSize = 120;
                 splitMain.Panel2MinSize = 500;
 
-                // Minimum heights for decoded root split.
                 decodedRootSplit.Panel1MinSize = 70;
                 decodedRootSplit.Panel2MinSize = 500;
 
-                // Minimum heights for grid/details split.
                 decodedBottomSplit.Panel1MinSize = 250;
                 decodedBottomSplit.Panel2MinSize = 200;
 
-                // Minimum widths for raw/decoded split.
                 rawDecodedSplit.Panel1MinSize = 200;
                 rawDecodedSplit.Panel2MinSize = 200;
 
-                // Set initial splitter distances.
+                // Set reasonable starter positions.
                 splitMain.SplitterDistance = 140;
                 decodedRootSplit.SplitterDistance = 60;
                 decodedBottomSplit.SplitterDistance = 360;
                 rawDecodedSplit.SplitterDistance = Math.Max(200, rawDecodedSplit.Width / 2);
 
-                // Keep left panel fixed so it doesn’t stretch awkwardly.
                 splitMain.FixedPanel = FixedPanel.Panel1;
 
-                // Clamp everything to prevent invalid distances.
                 TryClampSplitter(splitMain);
                 TryClampSplitter(decodedRootSplit);
                 TryClampSplitter(decodedBottomSplit);
@@ -1406,10 +1324,9 @@ namespace AutoDecoder.Gui
 
         protected override void OnResize(EventArgs e)
         {
-            // Call base resize logic.
             base.OnResize(e);
 
-            // Clamp splitter distances during resize to prevent out-of-range exceptions.
+            // Every time window changes size, clamp splitters to stay safe.
             if (splitMain != null) TryClampSplitter(splitMain);
             if (decodedRootSplit != null) TryClampSplitter(decodedRootSplit);
             if (decodedBottomSplit != null) TryClampSplitter(decodedBottomSplit);
@@ -1422,13 +1339,15 @@ namespace AutoDecoder.Gui
 
         private static string NormalizeForSearch(string s)
         {
-            // If string is empty, return empty.
+            // This “cleans up” text so search matches better.
+            // Example:
+            // - “0x7F,[22]” becomes “0x7f  22”
+            // This helps users find things even if punctuation is different.
+
             if (string.IsNullOrEmpty(s)) return string.Empty;
 
-            // Lowercase to make search case-insensitive.
             var chars = s.ToLowerInvariant().ToCharArray();
 
-            // Replace punctuation separators with spaces to reduce mismatch.
             for (int i = 0; i < chars.Length; i++)
             {
                 char c = chars[i];
@@ -1436,27 +1355,22 @@ namespace AutoDecoder.Gui
                     chars[i] = ' ';
             }
 
-            // Collapse repeated spaces into single spaces.
             return string.Join(" ", new string(chars)
                 .Split(new[] { ' ' }, StringSplitOptions.RemoveEmptyEntries));
         }
 
         private void RefreshSessionListUi()
         {
-            // If listbox is not ready, exit.
+            // If the session name changes, we want the ListBox to refresh text.
             if (lstSessions == null) return;
-
-            // If listbox has no data source, nothing to refresh.
             if (lstSessions.DataSource == null) return;
 
-            // Refresh binding context so list updates text (like session rename).
             if (BindingContext != null)
             {
                 if (BindingContext[lstSessions.DataSource] is CurrencyManager cm)
                     cm.Refresh();
             }
 
-            // Force redraw.
             lstSessions.Invalidate();
             lstSessions.Update();
         }
