@@ -53,7 +53,7 @@ namespace AutoDecoder.Gui
     /// <summary>
     /// Form1 = the main window.
     ///
-    /// 5th-grade translation:
+  
     /// This is the “main screen” of the app. Everything you see is built here.
     ///
     /// What it does:
