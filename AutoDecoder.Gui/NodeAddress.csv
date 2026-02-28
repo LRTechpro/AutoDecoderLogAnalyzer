@@ -1,0 +1,75 @@
+Module Abbreviation,Module Address,Module Name,
+AAM,7A4,Audio Amplifier Module,AAM - 7A4
+ABS,760,Anti-Lock Brake System (ABS) Control Module,ABS - 760
+ABSB,7F2,"Anti-Lock Brake System (ABS) Control Module ""B""",ABSB - 7F2
+ACCM,7C7,Air Conditioning Control Module,ACCM - 7C7
+ACCMB,6E0,"Air Conditioning Control Module ""B""",ACCMB
+ACM,727,Audio Front Control Module,ACM - 727
+APIM,7D0,Accessory Protocol Interface Module,APIM - 7D0
+ATCM,792,All Terrain Control Module,ATCM - 792
+AWD,703,All Wheel Drive,AWD - 703
+BCM,726,Body Control Module,BCM - 726
+BCMC (BJB),6F0,Body Control Module C / Battery Junction Box,BCMC - 6F0
+BECM,7E4,Battery Energy Control Module,BECM - 7E4
+BECMB,723,Battery Energy Control Module B,BECMB -723
+CCM,764,Cruise Control Module,CCM - 764
+CMR,7C1,Camera Module Rear (Driver Status Monitor Camera Module),CMR - 7C1
+DCACA,6F1,Direct Current / Alternating Current Convertor Module A,DCACA - 6F1
+DCDC,746,Direct Current / Direct Current Convertor Control Module,DCDC - 746
+DCME,7A2,Door Control Module E,DCME - 7A2
+DCMF,762,Door Control Module F,DCMF - 762
+DCMG,7B3,Door Control Module G,DCMG - 7B3
+DCMH,7B4,Door Control Module H,DCMH - 7B4
+DCMR,795,Differential Control Module Rear,DCMR - 795
+DDM,740,Driver Door Module,DDM - 740
+DSM / RBM,744,Driver Front Seat Module / Running Board Control Module,DSM - 744
+DSP,783,Audio Digital Signal Processing Module,DSP - 783
+FCIM,7A7,Front Control Interface Module,FCIM - 7A7
+GFM,7A1,Generic Function Module (Front Trunk Release Module(FTRM)),GFM - 7A1
+GSM,732,Gear Shift Module,GSM - 732
+GWM,716,Gateway Module A,GWM - 716
+HCM,734,Headlamp Control Module,HCM - 734
+HUD,7B2,Heads Up Display Module,HUD - 7B2
+HVAC,733,"Heating, Ventilation, and Air Conditioning Module",HVAC - 733
+IPC,720,Instrument Panel Cluster,IPC - 720
+IPMA,706,Image Processing Module A,IPMA - 706
+IPMB,7B1,Image Processing Module B,IPMB - 7B1
+LDCMA,6F6,Lighting Driver Control Module A,LDCMA - 6F6
+LDCMB,6F7,Lighting Driver Control Module B,LDCMB - 6F7
+OBCC,6F5,Off-Board Charger Controller,OBCC - 6F5
+OCS,765,Occupant Classification System Module,OCS - 765
+PACM,750,Pedestrian Alert Control Module,PACM - 750
+PAM,736,Parking Assist Control Module,PAM - 736
+PCM,7E0,Powertrain Control Module,PCM - 7E0
+PDM,741,Passenger Door Module,PDM - 741
+PSCM,730,Power Steering Control Module,PSCM - 730
+RACM,774,Rear Audio Control Module,RACM - 774
+RBM,766,Running Board Control Module,RBM - 766
+RCM,737,Restraints Control Module,RCM - 737
+RFA,731,Remote Function Actuator,RFA - 731
+RGTM,775,Rear Gate Trunk Module,RGTM - 775
+RTM,751,Radio Transceiver Module,RTM - 751
+SASM,797,Steering Angle Sensor Module,SASM - 797
+SCCM,724,Steering Column Control Module,SCCM - 724
+SCMB,7A3,Passenger Front Seat Module,SCMB - 7A3
+SCMC,702,Seat Control Module C,SCMC - 702
+SCMD,763,Seat Control Module D,SCMD - 763
+SCME,776,Front Seat Climate Control Module,SCME - 776
+SCMF,777,Rear Seat Climate Control Module,SCMF - 777
+SCMG,712,Driver Multi-Contour Seat Module,SCMG - 712
+SCMH,713,Passenger Multi-Contour Seat Module,SCMH - 713
+SCMJ,787,Seat Control Module J,SCMJ - 787
+SECM,7C5,Steering Effort Control Module,SECM - 7C5
+SOBDM,7E2,Secondary On-Board Diagnostic Control Module A,SOBDM - 7E2
+SOBDMB,7E7,Secondary On-Board Diagnostic Control Module B,SOBDMB - 7E7
+SOBDMC,7E6,Secondary On-Board Diagnostic Control Module C,SOBDMC - 7E6
+SODCMC,.,Side Obstacle Detection Control Module C,SODCMC - 6F2
+SODCMD,6F3,Side Obstacle Detection Control Module D,SODCMD - 6F3
+SODL,7C4,Side Obstacle Detection Control Module LH,SODL - 7C4
+SODR,7C6,Side Obstacle Detection Control Module RH,SODR - 7C6
+TCCM,761,Transfer Case Control Module,TCCM - 761
+TCM,7E9,Transmission Control Module,TCM - 7E9
+TCU,754,Telematic Control Unit Module,TCU - 754
+TRM / TBM,791,Trailer Relay Module / Trailer Brake Control Module,TRM - 791
+VDM,721,Vehicle Dynamics Control Module,VDM - 721
+WACM,725,Wireless Accessory Charging Module,WACM - 725

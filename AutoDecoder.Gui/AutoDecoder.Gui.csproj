@@ -9,6 +9,16 @@
   </PropertyGroup>
 
   <ItemGroup>
+    <None Remove="NodeAddress.csv" />
+  </ItemGroup>
+
+  <ItemGroup>
+    <Content Include="NodeAddress.csv">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+    </Content>
+  </ItemGroup>
+
+  <ItemGroup>
     <ProjectReference Include="..\AutoDecoder.Models\AutoDecoder.Models.csproj" />
     <ProjectReference Include="..\AutoDecoder.Protocols\AutoDecoder.Protocols.csproj" />
   </ItemGroup>
