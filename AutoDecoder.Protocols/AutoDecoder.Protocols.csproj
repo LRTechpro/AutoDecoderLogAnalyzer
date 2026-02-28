@@ -10,6 +10,10 @@
     <ProjectReference Include="..\AutoDecoder.Models\AutoDecoder.Models.csproj" />
   </ItemGroup>
 
+  <ItemGroup>
+    <Folder Include="Reference\Data\" />
+  </ItemGroup>
+
   
 
 </Project>

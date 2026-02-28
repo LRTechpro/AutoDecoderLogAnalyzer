@@ -231,14 +231,17 @@ namespace AutoDecoder.Gui
             tabControl = new TabControl { Dock = DockStyle.Fill };
             tabDecoded = new TabPage("Decoded");
             tabSummary = new TabPage("Summary");
+            var tabReference = new TabPage("Reference"); // NEW
 
             tabControl.TabPages.Add(tabDecoded);
             tabControl.TabPages.Add(tabSummary);
+            tabControl.TabPages.Add(tabReference); // NEW
 
             splitMain.Panel2.Controls.Add(tabControl);
 
             BuildDecodedTab();
             BuildSummaryTab();
+            BuildReferenceTab(tabReference); // NEW
         }
 
         // GOAL: Build the "Decoded" tab UI (filters, grid, and detail panes).
@@ -407,6 +410,72 @@ namespace AutoDecoder.Gui
             dgvLines.DataSource = _filteredLogLines;
 
             ConfigureDataGridColumns();
+        }
+        private void BuildReferenceTab(TabPage tabReference)
+        {
+            // Top-level split: UDS/NRC on top, DIDs on bottom (or whatever you prefer)
+            var split = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Horizontal,
+                SplitterDistance = 260
+            };
+
+            // UDS + NRC side-by-side
+            var topSplit = new SplitContainer
+            {
+                Dock = DockStyle.Fill,
+                Orientation = Orientation.Vertical,
+                SplitterDistance = tabReference.Width / 2
+            };
+
+            var grdUds = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AutoGenerateColumns = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false
+            };
+
+            var grdNrc = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AutoGenerateColumns = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false
+            };
+
+            // Bind UDS + NRC tables
+            grdUds.DataSource = AutoDecoder.Protocols.Reference.UdsServiceTable.RequestSidToName
+                .Select(kvp => new { SID = $"0x{kvp.Key:X2}", Name = kvp.Value })
+                .ToList();
+
+            grdNrc.DataSource = AutoDecoder.Protocols.Reference.NrcTable.CodeToMeaning
+                .Select(kvp => new { NRC = $"0x{kvp.Key:X2}", Meaning = kvp.Value })
+                .ToList();
+
+            topSplit.Panel1.Controls.Add(grdUds);
+            topSplit.Panel2.Controls.Add(grdNrc);
+
+            // Bottom: placeholder for DID list (CSV-backed)
+            var grdDid = new DataGridView
+            {
+                Dock = DockStyle.Fill,
+                ReadOnly = true,
+                AutoGenerateColumns = true,
+                AllowUserToAddRows = false,
+                AllowUserToDeleteRows = false
+            };
+
+            // If you implement FordDidTable as CSV-loaded dictionary, bind it similarly:
+            // grdDid.DataSource = FordDidTable.All().Select(...).ToList();
+
+            split.Panel1.Controls.Add(topSplit);
+            split.Panel2.Controls.Add(grdDid);
+
+            tabReference.Controls.Add(split);
         }
 
         // GOAL: Attach grid post-binding cleanup exactly one time.
