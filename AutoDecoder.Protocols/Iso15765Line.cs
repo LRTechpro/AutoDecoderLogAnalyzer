@@ -4,6 +4,7 @@ using System.Collections.Generic;
 using System.Globalization;
 using System.Linq;
 using AutoDecoder.Models;
+using AutoDecoder.Protocols.Reference;
 
 
 
@@ -116,6 +117,11 @@ public sealed class Iso15765Line : LogLine
 
         var frame = ParseUdsPayload(udsPayload, idBytes);
 
+        // ---- Persist key decode fields onto THIS LogLine so FindingsAggregator can count them ----
+        UdsSid = frame.UdsPayload is { Length: > 0 } ? frame.UdsPayload[0] : null;
+        UdsDid = frame.Did;
+        UdsNrc = frame.Nrc;
+
         Summary = BuildReportSummary(frame);
         Details = BuildTechnicalBreakdown(frame);
         Confidence = frame.IsNegativeResponse ? 1.0 : 0.9;
@@ -135,12 +141,30 @@ public sealed class Iso15765Line : LogLine
 
         byte sid = udsPayload[0];
 
+        // Generic positive response handling (request SID + 0x40), excluding 0x7F negative response
+        if (sid >= 0x40 && sid != 0x7F)
+        {
+            frame.IsPositiveResponse = true;
+
+            // store the original request SID (e.g., 0x50 -> 0x10)
+            frame.ServiceId = (byte)(sid - 0x40);
+
+            // name based on the response SID so NameOrUnknown can label "(Positive Response)"
+            frame.ServiceName = UdsServiceTable.NameOrUnknown(sid);  // ✅ use response SID
+
+            // If this is NOT a DID-based positive response, we can return now.
+            // DID-based positives (0x62/0x6E/0x6F) are handled below to extract DID/data bytes.
+            if (sid != 0x62 && sid != 0x6E && sid != 0x6F)
+                return frame;
+        }
+
         // Request: 0x22 <DIDhi> <DIDlo>
-        if (sid == 0x22 && udsPayload.Length >= 3)
+        // DID-based requests: 0x22 ReadDID, 0x2E WriteDID, 0x2F IOControlByIdentifier
+        if ((sid == 0x22 || sid == 0x2E || sid == 0x2F) && udsPayload.Length >= 3)
         {
             frame.IsRequest = true;
-            frame.ServiceId = 0x22;
-            frame.ServiceName = UdsLookup.GetServiceName(0x22);
+            frame.ServiceId = sid;
+            frame.ServiceName = UdsServiceTable.NameOrUnknown(sid);
 
             frame.Did = (ushort)((udsPayload[1] << 8) | udsPayload[2]);
             frame.DidName = UdsLookup.GetDidName(frame.Did.Value);
@@ -162,7 +186,9 @@ public sealed class Iso15765Line : LogLine
             frame.NrcName = UdsLookup.GetNrcMeaning(nrc);
 
             // [0x7F, 0x22, NRC, DIDhi, DIDlo]
-            if (originalSid == 0x22 && udsPayload.Length >= 5)
+            // Some ECUs include DID bytes after NRC for DID-based services:
+            // [0x7F, <origSID>, NRC, DIDhi, DIDlo]
+            if ((originalSid == 0x22 || originalSid == 0x2E || originalSid == 0x2F) && udsPayload.Length >= 5)
             {
                 frame.Did = (ushort)((udsPayload[3] << 8) | udsPayload[4]);
                 frame.DidName = UdsLookup.GetDidName(frame.Did.Value);
@@ -172,12 +198,15 @@ public sealed class Iso15765Line : LogLine
         }
 
         // Positive response to 0x22 is 0x62
-        if (sid == 0x62 && udsPayload.Length >= 3)
+        // Positive responses for DID-based services:
+        // 0x62 (ReadDID), 0x6E (WriteDID), 0x6F (IOControlByIdentifier)
+        if ((sid == 0x62 || sid == 0x6E || sid == 0x6F) && udsPayload.Length >= 3)
         {
             frame.IsPositiveResponse = true;
 
-            frame.ServiceId = 0x22;
-            frame.ServiceName = UdsLookup.GetServiceName(0x22);
+            // Map positive SID back to request SID
+            frame.ServiceId = (byte)(sid - 0x40);
+            frame.ServiceName = UdsServiceTable.NameOrUnknown(sid);
 
             frame.Did = (ushort)((udsPayload[1] << 8) | udsPayload[2]);
             frame.DidName = UdsLookup.GetDidName(frame.Did.Value);

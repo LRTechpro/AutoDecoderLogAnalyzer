@@ -36,6 +36,12 @@ public abstract class LogLine
     public int? CanId { get; protected set; }
     public string? CanNode { get; protected set; }
 
+    public ushort? Did { get; set; }
+
+    public ushort? UdsDid { get; set; }
+    public byte? UdsSid { get; set; }
+    public byte? UdsNrc { get; set; }
+
     protected LogLine(int lineNumber, string raw)
     {
         _lineNumber = lineNumber;

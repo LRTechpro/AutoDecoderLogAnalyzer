@@ -1,5 +1,6 @@
 ﻿#nullable enable
 using System;
+using AutoDecoder.Protocols.Reference;
 
 namespace AutoDecoder.Protocols.Utilities
 {
@@ -10,7 +11,7 @@ namespace AutoDecoder.Protocols.Utilities
     public static class UdsLookup
     {
         public static string GetServiceName(byte sid)
-            => UdsTables.ServiceName.TryGetValue(sid, out var name) ? name : "UnknownService";
+    => UdsServiceTable.NameOrUnknown(sid);
 
         public static string GetNrcMeaning(byte nrc)
             => UdsTables.NrcMeaning.TryGetValue(nrc, out var meaning) ? meaning : "UnknownNRC";

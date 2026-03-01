@@ -280,5 +280,20 @@ namespace AutoDecoder.Protocols.Utilities
             if (sid == 0x31) return "RoutineControl result: ~50–500 ms (or longer)";
             return "—";
         }
+        public static bool TryExtractDid(byte sid, ReadOnlySpan<byte> payload, out ushort did)
+        {
+            did = 0;
+
+            if (payload.Length < 3)
+                return false;
+
+            if (sid is 0x22 or 0x2E or 0x2F or 0x62 or 0x6E or 0x6F)
+            {
+                did = (ushort)((payload[1] << 8) | payload[2]);
+                return true;
+            }
+
+            return false;
+        }
     }
 }

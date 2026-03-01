@@ -170,6 +170,49 @@ namespace AutoDecoder.Gui
             BuildUi();
             WireEvents();
             CreateNewSession(makeActive: true);
+
+            try
+            {
+                var csvPath = Path.Combine(AppDomain.CurrentDomain.BaseDirectory, "NodeAddress.csv");
+                LoadNodeAddressCsv(csvPath);
+               
+            }
+            catch (Exception ex)
+            {
+                MessageBox.Show("Failed to load NodeAddress.csv:\n" + ex.Message);
+            }
+
+        }
+        private void LoadNodeAddressCsv(string path)
+        {
+            if (!File.Exists(path))
+                throw new FileNotFoundException("NodeAddress.csv not found.", path);
+
+            var lines = File.ReadAllLines(path);
+
+            foreach (var line in lines.Skip(1)) // skip header row
+            {
+                if (string.IsNullOrWhiteSpace(line))
+                    continue;
+
+                var parts = line.Split(',');
+
+                if (parts.Length < 3)
+                    continue;
+
+                var canIdHex = parts[0].Trim();
+                var abbrev = parts[1].Trim();
+                var name = parts[2].Trim();
+
+                if (int.TryParse(
+                        canIdHex.Replace("0x", ""),
+                        System.Globalization.NumberStyles.HexNumber,
+                        null,
+                        out int canId))
+                {
+                    AutoDecoder.Protocols.Utilities.ModuleAddressBook.AddOrUpdate(canId, abbrev, name);
+                }
+            }
         }
 
         // ================================================================
@@ -272,7 +315,7 @@ namespace AutoDecoder.Gui
                 AutoSize = true,
                 ColumnCount = 10,
                 RowCount = 2,
-                Padding = new Padding(4),
+                Padding = new Padding(8),
                 Margin = new Padding(0)
             };
 
@@ -576,7 +619,7 @@ namespace AutoDecoder.Gui
                 Dock = DockStyle.Fill,
                 ColumnCount = 2,
                 RowCount = 2,
-                Padding = new Padding(10)
+                Padding = new Padding(8)
             };
 
             layout.ColumnStyles.Add(new ColumnStyle(SizeType.Percent, 50));
@@ -1497,6 +1540,9 @@ namespace AutoDecoder.Gui
 
             lstSessions.Invalidate();
             lstSessions.Update();
-        }
+        }      
+
+                   
     }
+
 }

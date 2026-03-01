@@ -21,7 +21,7 @@ namespace AutoDecoder.Protocols.Reference
             [0x2A] = "ReadDataByPeriodicIdentifier",
             [0x2C] = "DynamicallyDefineDataIdentifier",
             [0x2E] = "WriteDataByIdentifier",
-            [0x2F] = "InputOutputControlByIdentifier",
+            [0x2F] = "InputOutputControlByIdentifier",            
             [0x31] = "RoutineControl",
             [0x34] = "RequestDownload",
             [0x35] = "RequestUpload",
@@ -39,7 +39,21 @@ namespace AutoDecoder.Protocols.Reference
 
         public static byte PositiveResponseSid(byte requestSid) => (byte)(requestSid + 0x40);
 
-        public static string NameOrUnknown(byte requestSid)
-            => RequestSidToName.TryGetValue(requestSid, out var name) ? name : $"UnknownSID(0x{requestSid:X2})";
+        public static string NameOrUnknown(byte sid)
+        {
+            // If caller passes request SID (0x10, 0x11, 0x22, etc.)
+            if (RequestSidToName.TryGetValue(sid, out var name))
+                return name;
+
+            // If caller passes response SID (0x50, 0x51, 0x62, etc.), map back to request SID
+            if (sid >= 0x40 && sid != 0x7F)
+            {
+                byte original = (byte)(sid - 0x40);
+                if (RequestSidToName.TryGetValue(original, out var originalName))
+                    return originalName; // ✅ no “(Positive Response)” here
+            }
+
+            return $"UnknownSID(0x{sid:X2})";
+        }
     }
 }

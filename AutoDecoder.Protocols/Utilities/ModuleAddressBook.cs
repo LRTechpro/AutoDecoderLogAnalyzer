@@ -82,5 +82,10 @@ namespace AutoDecoder.Protocols.Utilities
 
             return hex;
         }
+        public static void AddOrUpdate(int canId, string abbrev, string name)
+        {
+            _byCanId[canId] = new ModuleInfo(abbrev, name);
+        }
+        public static int Count => _byCanId.Count;
     }
 }

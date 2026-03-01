@@ -75,7 +75,9 @@ public static class UdsConversationBuilder
             {
                 // Treat as request
                 byte sid = pdu.Payload[0];
-                ushort? did = TryReadDid(pdu.Payload);
+                ushort? did = null;
+                if (TryExtractDid(pdu.Payload, out var extractedDid))
+                    did = extractedDid;
 
                 open.Add(new UdsTransaction
                 {
@@ -160,19 +162,26 @@ public static class UdsConversationBuilder
         return false;
     }
 
-    private static ushort? TryReadDid(byte[] payload)
+    private static bool TryExtractDidFromUds(ReadOnlySpan<byte> udsPayload, out ushort did)
     {
-        // Only safe extraction for ReadDID request/response
-        // Request: 22 DIDhi DIDlo
-        // Positive: 62 DIDhi DIDlo ...
-        if (payload.Length < 3) return null;
-        byte sid = payload[0];
+        did = 0;
 
-        if (sid is 0x22 or 0x62)
-            return (ushort)((payload[1] << 8) | payload[2]);
+        // Must have at least: SID + DID(2)
+        if (udsPayload.Length < 3) return false;
 
-        // Negative response sometimes includes DID for 0x22 depending on log source; ignore here.
-        return null;
+        byte sid = udsPayload[0];
+
+        // Request/positive-response SIDs where DID sits at payload[1..2]
+        // 0x22/0x62 ReadDID
+        // 0x2E/0x6E WriteDID
+        // 0x2F/0x6F IOControlByIdentifier
+        if (sid is 0x22 or 0x62 or 0x2E or 0x6E or 0x2F or 0x6F)
+        {
+            did = (ushort)((udsPayload[1] << 8) | udsPayload[2]);
+            return true;
+        }
+
+        return false;
     }
 
     private static bool WithinSeconds(DateTime? a, DateTime? b, int seconds)
@@ -185,5 +194,66 @@ public static class UdsConversationBuilder
     {
         if (!a.HasValue || !b.HasValue) return null;
         return (b.Value - a.Value).TotalMilliseconds;
+    }
+
+    private static bool TryExtractDidFromPayload(byte[] payload, out ushort did)
+    {
+        did = 0;
+
+        if (payload == null || payload.Length < 3)
+            return false;
+
+        byte sid = payload[0];
+
+        // DID-based services
+        if (sid is 0x22 or 0x2E or 0x2F or 0x62 or 0x6E or 0x6F)
+        {
+            did = (ushort)((payload[1] << 8) | payload[2]);
+            return true;
+        }
+
+        // Negative response: 7F <origSID> <NRC> [DIDhi DIDlo]
+        if (sid == 0x7F && payload.Length >= 5)
+        {
+            byte originalSid = payload[1];
+
+            if (originalSid is 0x22 or 0x2E or 0x2F)
+            {
+                did = (ushort)((payload[3] << 8) | payload[4]);
+                return true;
+            }
+        }
+
+        return false;
+    }
+    private static bool TryExtractDid(byte[] payload, out ushort did)
+    {
+        did = 0;
+        if (payload == null || payload.Length < 3) return false;
+
+        byte sid = payload[0];
+
+        // Requests that carry DID immediately after SID:
+        // 0x22 ReadDID, 0x2E WriteDID, 0x2F IOCBI (often DID), plus positive responses 0x62/0x6E/0x6F
+        if (sid is 0x22 or 0x2E or 0x2F or 0x62 or 0x6E or 0x6F)
+        {
+            did = (ushort)((payload[1] << 8) | payload[2]);
+            return true;
+        }
+
+        // Negative response: 0x7F <origSID> <NRC> [optional DIDHi DIDLo ...]
+        if (sid == 0x7F && payload.Length >= 5)
+        {
+            byte origSid = payload[1];
+
+            // Only treat it as DID-carrying if the original service is DID-based
+            if (origSid is 0x22 or 0x2E or 0x2F)
+            {
+                did = (ushort)((payload[3] << 8) | payload[4]);
+                return true;
+            }
+        }
+
+        return false;
     }
 }
